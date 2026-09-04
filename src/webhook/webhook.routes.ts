@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { config } from "../config.js";
 import { handleTelegramUpdate } from "./webhook.service.js";
+import { isDuplicate } from "./webhook.dedup.js";
 
 const webhook = new Hono();
 
@@ -12,6 +13,10 @@ webhook.post('/', async (c) => {
     }
 
     const update = await c.req.json();
+
+    if (isDuplicate(update.update_id)) {
+        return c.text('ok');
+    }
 
     handleTelegramUpdate(update).catch((error) => {
         console.error('Error processing update:', error);
