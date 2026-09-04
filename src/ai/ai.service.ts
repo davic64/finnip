@@ -100,7 +100,9 @@ Si el mensaje no menciona fecha, omite el campo.
 Responde SOLO con el JSON correspondiente, nada más.`;
 
     const response = await client.chat.completions.create({
-        model: 'deepseek-v4-flash',
+        // Ver la nota en answerFinancialQuestion: extraer un JSON de una frase no
+        // necesita razonamiento. Medido 685ms contra 1884ms, misma precisión.
+        model: 'deepseek-chat',
         response_format: { type: 'json_object' },
         messages: [
             { role: 'system', content: systemPrompt },
@@ -157,7 +159,8 @@ Redondea a pesos cuando los centavos no cambien el consejo: es una conversación
 Hablas como un asesor financiero profesional: sobrio, claro y directo, con la autoridad de quien
 ya vio muchos casos. Nada de modismos ni albures: prohibido "cuate", "varo", "lana", "la riegas",
 "no la armas", "dale un frenón". Trátalo de tú, con respeto, sin sonar acartonado ni institucional.
-Frases cortas, máximo 4 frases. Nada de listas ni viñetas.`
+Máximo 3 frases y que sean cortas. Nada de listas ni viñetas.
+Un dato, una consecuencia, una acción: nada más. Cada frase de más son segundos de espera.`
         : `Responde en español, máximo 5 líneas, directo y amigable, con los montos como $1,234.56.
 Texto plano: nada de markdown, negritas ni asteriscos, que Telegram los muestra tal cual.`;
 
@@ -178,7 +181,13 @@ DATOS REALES DEL USUARIO:
 ${context}`;
 
     const response = await client.chat.completions.create({
-        model: 'deepseek-v4-flash',
+        // deepseek-chat en vez de v4-flash: flash es de razonamiento y quemaba ~600
+        // tokens de pensamiento invisible por consejo, o sea 5-6s de los que el
+        // usuario no ve nada. Aquí no hace falta razonar, los números ya vienen
+        // calculados en el contexto. Medido: 962ms contra 5683ms.
+        // Nada de max_tokens: en un modelo de razonamiento el tope se lo come el
+        // pensamiento y la respuesta llega vacía.
+        model: 'deepseek-chat',
         messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: question },

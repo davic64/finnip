@@ -44,6 +44,18 @@ export async function sendTyping(chatId: number, action: 'typing' | 'record_voic
 }
 
 /** Nota de voz. Best-effort igual que el TTS: si falla, ya mandamos el texto. */
+/**
+ * Telegram apaga el indicador a los ~5s y la respuesta tarda más. Esto lo revive
+ * hasta que llames a la función que regresa.
+ */
+export function keepTyping(chatId: number, action: 'typing' | 'record_voice') {
+    void sendTyping(chatId, action);
+
+    const timer = setInterval(() => void sendTyping(chatId, action), 4000);
+
+    return () => clearInterval(timer);
+}
+
 export async function sendVoice(chatId: number, audio: Buffer) {
     const form = new FormData();
 

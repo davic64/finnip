@@ -10,7 +10,7 @@ import {
 import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
 import { extractTextFromImage } from '../drive/drive.service.js';
-import { downloadFile, sendMessage, sendTyping, sendVoice } from '../telegram/telegram.service.js';
+import { downloadFile, keepTyping, sendMessage, sendVoice } from '../telegram/telegram.service.js';
 import { synthesize } from '../tts/tts.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
 import { config } from '../config.js';
@@ -76,11 +76,6 @@ async function answerQuestion(question: string, spoken: boolean): Promise<string
  * falla, mejor leerlo que quedarse sin respuesta.
  */
 async function reply(chatId: number, answer: string, asVoice: boolean) {
-    if (asVoice) {
-        // Generar el audio son otros 5-7s; que al menos se vea "grabando audio…".
-        await sendTyping(chatId, 'record_voice');
-    }
-
     const audio = asVoice ? await synthesize(answer) : null;
 
     if (audio) {
@@ -108,6 +103,9 @@ export const handleTelegramUpdate = async (update: unknown) => {
         return;
     }
 
+    // Se apaga en el finally: la respuesta tarda ~12s y el indicador dura 5.
+    let stopIndicator = () => { };
+
     try {
         // Antes del flujo de comandos: el consejo vive aquí, no en commands.service,
         // porque necesita answerQuestion y eso haría un import circular.
@@ -117,6 +115,7 @@ export const handleTelegramUpdate = async (update: unknown) => {
             // "/consejo ¿me alcanza para unos tenis?" también sirve.
             const question = advice[2]?.trim() || 'Dame un consejo financiero.';
 
+            stopIndicator = keepTyping(chat.id, 'record_voice');
             await reply(chat.id, await answerQuestion(question, true), true);
             return;
         }
@@ -125,7 +124,7 @@ export const handleTelegramUpdate = async (update: unknown) => {
             return;
         }
 
-        await sendTyping(chat.id);
+        stopIndicator = keepTyping(chat.id, 'typing');
 
         let content = text;
 
@@ -145,6 +144,11 @@ export const handleTelegramUpdate = async (update: unknown) => {
         if (looksLikeQuestion(content)) {
             const spoken = ADVICE_HINTS.test(content);
 
+            if (spoken) {
+                stopIndicator();
+                stopIndicator = keepTyping(chat.id, 'record_voice');
+            }
+
             await reply(chat.id, await answerQuestion(content, spoken), spoken);
             return;
         }
@@ -153,6 +157,11 @@ export const handleTelegramUpdate = async (update: unknown) => {
 
         if (result.type === 'pregunta') {
             const spoken = ADVICE_HINTS.test(content);
+
+            if (spoken) {
+                stopIndicator();
+                stopIndicator = keepTyping(chat.id, 'record_voice');
+            }
 
             await reply(chat.id, await answerQuestion(content, spoken), spoken);
             return;
@@ -163,5 +172,7 @@ export const handleTelegramUpdate = async (update: unknown) => {
         console.error('Error procesando mensaje:', error);
 
         await sendMessage(chat.id, toUserMessage(error));
+    } finally {
+        stopIndicator();
     }
 };
