@@ -75,6 +75,7 @@ const HELP = `Soy Finnip 🐷
 • Mándame un mensaje suelto: "gasté 250 en el súper" o "me pagaron 5000 de nómina".
 • Mándame la foto de un ticket y lo leo.
 • Pregúntame lo que sea: "¿cuánto llevo gastado este mes?".
+• /consejo y te mando un consejo en audio con tus números.
 • /gasto o /ingreso para registrarlo paso a paso.
 • /cancelar para salirte de un registro a medias.
 • /recargar si editaste los catálogos de la hoja.`;

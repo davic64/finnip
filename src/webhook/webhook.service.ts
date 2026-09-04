@@ -25,6 +25,8 @@ const messageSchema = z.object({
     }),
 });
 
+const ADVICE_COMMAND = /^\/consejo(@\w+)?\b(.*)$/is;
+
 // Heurística deliberadamente estrecha: un falso positivo contesta en vez de
 // registrar (se pierde el gasto), un falso negativo solo cuesta una llamada de más.
 const QUESTION_STARTERS = /^(cuánto|cuanto|cuál|cual|cómo voy|como voy|qué tal voy|que tal voy|en qué gasto|en que gasto|me alcanza)\b/i;
@@ -107,6 +109,18 @@ export const handleTelegramUpdate = async (update: unknown) => {
     }
 
     try {
+        // Antes del flujo de comandos: el consejo vive aquí, no en commands.service,
+        // porque necesita answerQuestion y eso haría un import circular.
+        const advice = text?.trim().match(ADVICE_COMMAND);
+
+        if (advice) {
+            // "/consejo ¿me alcanza para unos tenis?" también sirve.
+            const question = advice[2]?.trim() || 'Dame un consejo financiero.';
+
+            await reply(chat.id, await answerQuestion(question, true), true);
+            return;
+        }
+
         if (text && await handleCommandFlow(chat.id, text)) {
             return;
         }
