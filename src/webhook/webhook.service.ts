@@ -27,9 +27,23 @@ const messageSchema = z.object({
 // Heurística deliberadamente estrecha: un falso positivo contesta en vez de
 // registrar (se pierde el gasto), un falso negativo solo cuesta una llamada de más.
 const QUESTION_STARTERS = /^(cuánto|cuanto|cuál|cual|cómo voy|como voy|qué tal voy|que tal voy|en qué gasto|en que gasto|me alcanza)\b/i;
+// Pedir consejo no lleva signos de interrogación: "dame un consejo", "aconséjame".
+const ADVICE_HINTS = /\b(consejo|conséjame|aconséjame|aconsejame|recomienda|recomiendas|recomendación|recomendacion|presupuesto|presupuestar|cómo voy|como voy)\b/i;
 
-const looksLikeQuestion = (text: string) =>
-    text.includes('?') || text.includes('¿') || QUESTION_STARTERS.test(text.trim());
+// "gasté 500 del presupuesto de comida" es un registro, no una consulta: si el
+// mensaje arranca con un verbo de movimiento, gana el registro.
+// Ojo: nada de \b al final, que en JS es ASCII y no reconoce frontera tras "gasté".
+const TRANSACTION_VERBS = /^(gast[eé]|pagu[eé]|compr[eé]|cobr[eé]|recib[ií]|me pagaron|me depositaron)(\s|$)/i;
+
+const looksLikeQuestion = (text: string) => {
+    const trimmed = text.trim();
+
+    if (TRANSACTION_VERBS.test(trimmed)) {
+        return false;
+    }
+
+    return trimmed.includes('?') || trimmed.includes('¿') || QUESTION_STARTERS.test(trimmed) || ADVICE_HINTS.test(trimmed);
+};
 
 /**
  * Junta el contexto real: el saldo del Tablero, la salud financiera de la hoja
@@ -43,19 +57,13 @@ async function answerQuestion(question: string): Promise<string> {
         getIncomes(),
     ]);
 
-    const detail = buildFinancialContext(expenses, incomes, formatDate());
+    const detail = buildFinancialContext(expenses, incomes, formatDate(), balance);
 
     if (detail.omitted > 0) {
         console.log(`Contexto recortado: ${detail.omitted} gastos viejos fuera del detalle`);
     }
 
-    const context = [
-        `Dinero disponible hoy (acumulado al cierre del mes en curso): ${balance.toFixed(2)}`,
-        '',
-        health,
-        '',
-        detail.text,
-    ].join('\n');
+    const context = [health, '', detail.text].join('\n');
 
     return answerFinancialQuestion(question, context);
 }
