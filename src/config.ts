@@ -7,6 +7,14 @@ export const configSchema = z.object({
     GOOGLE_SERVICE_ACCOUNT_KEY: z.string().min(1, "GOOGLE_SERVICE_ACCOUNT_KEY is required"),
     SPREADSHEET_ID: z.string().min(1, "SPREADSHEET_ID is required"),
     DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
+    TIMEZONE: z.string().min(1).default("America/Mexico_City"),
+    // Lista de chat ids separados por coma. Sin esto cualquiera que encuentre
+    // el bot podría escribir en la hoja.
+    ALLOWED_CHAT_IDS: z
+        .string()
+        .min(1, "ALLOWED_CHAT_IDS is required")
+        .transform((value) => value.split(",").map((id) => Number(id.trim())))
+        .pipe(z.array(z.int()).min(1)),
 });
 
 export type Config = z.infer<typeof configSchema>;
