@@ -2,6 +2,8 @@ import { google } from 'googleapis';
 import * as z from 'zod';
 import { config } from '../config.js';
 import { auth } from '../google/google.auth.js';
+import formatDate from '../utils/formatDate.js';
+import { UserError } from '../utils/UserError.js';
 
 const sheets = google.sheets({ version: 'v4', auth });
 
@@ -98,6 +100,91 @@ async function readCatalog(range: string): Promise<string[]> {
 }
 
 export const clearCatalogCache = () => catalogCache.clear();
+
+// La hoja escribe los meses como "sep2026". Intl no sirve aquí: en es-MX
+// septiembre abrevia "sept" y no casaría con la hoja.
+const MONTH_KEYS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+function currentMonthKey(): string {
+    const [, month, year] = formatDate().split('/');
+
+    return `${MONTH_KEYS[Number(month) - 1]}${year}`;
+}
+
+/**
+ * Acumulado al cierre del mes en curso, del histórico mensual (Tablero!I6:M18).
+ * Se busca la fila por nombre de mes calculado en JS: NO se lee Tablero!B10 ni
+ * ninguna celda del resumen, porque todas dependen del selector manual de B4.
+ */
+export async function getCurrentBalance(): Promise<number> {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: 'Tablero!I6:M18',
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+
+    const month = currentMonthKey();
+    const row = (response.data.values ?? []).find(
+        (cells) => String(cells[0]).trim().toLowerCase() === month
+    );
+
+    if (!row) {
+        throw new UserError(
+            `No encontré ${month} en el histórico del Tablero 🤔 Revisa que "Mes analizado" (Tablero!B2) esté en el mes actual.`
+        );
+    }
+
+    const balance = z.coerce.number().safeParse(row[4]);
+
+    if (!balance.success) {
+        throw new UserError(`El acumulado al cierre de ${month} no es un número en tu hoja.`);
+    }
+
+    return balance.data;
+}
+
+/**
+ * Salud financiera y promedios de 12 meses (columnas F-G del Tablero), en texto
+ * plano para el prompt. Las etiquetas salen de la hoja, así que si las renombras
+ * esto sigue funcionando.
+ *
+ * A propósito NO incluye "Resumen del mes" (A6:B14): esos números son del periodo
+ * elegido a mano en B4, no del mes, y meterlos sería mentirle a la IA.
+ */
+export async function getFinancialHealthData(): Promise<string> {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: 'Tablero!A5:M18',
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+
+    const rows = response.data.values ?? [];
+    // El rango arranca en la fila 5, así que la fila N de la hoja es rows[N - 5].
+    const at = (sheetRow: number) => rows[sheetRow - 5] ?? [];
+    const pairs = (from: number, to: number) => {
+        const lines: string[] = [];
+
+        for (let sheetRow = from; sheetRow <= to; sheetRow++) {
+            const [label, value] = [at(sheetRow)[5], at(sheetRow)[6]];
+
+            if (label && value !== undefined && value !== '') {
+                lines.push(`- ${label}: ${value}`);
+            }
+        }
+
+        return lines.join('\n') || '- sin datos';
+    };
+
+    return [
+        'SALUD FINANCIERA (Tablero de la hoja):',
+        pairs(6, 11),
+        '',
+        'PROMEDIOS DE LOS ÚLTIMOS 12 MESES CON DATOS:',
+        pairs(13, 15),
+    ].join('\n');
+}
 
 export const getCategories = () => readCatalog('Config!A3:A40');
 export const getPaymentMethods = () => readCatalog('Config!D3:D20');
