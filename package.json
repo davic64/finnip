@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "date-fns": "^4.4.0",
+    "googleapis": "^178.0.0",
     "hono": "^4.13.5",
+    "openai": "^7.9.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {
