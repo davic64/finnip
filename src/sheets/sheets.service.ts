@@ -72,60 +72,38 @@ export function getIncomes(): Promise<IncomeRow[]> {
     );
 }
 
-export async function getCategories(): Promise<string[]> {
+// Los catálogos de Config casi nunca cambian y se leían en CADA mensaje: eran
+// ~600ms fijos por gasto. Con el TTL, editar la hoja tarda hasta 1h en verse;
+// /recargar lo fuerza sin esperar.
+const CATALOG_TTL_MS = 60 * 60 * 1000;
+const catalogCache = new Map<string, { values: string[]; readAt: number }>();
+
+async function readCatalog(range: string): Promise<string[]> {
+    const cached = catalogCache.get(range);
+
+    if (cached && Date.now() - cached.readAt < CATALOG_TTL_MS) {
+        return cached.values;
+    }
+
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId: config.SPREADSHEET_ID,
-        range: 'Config!A3:A40',
+        range,
     });
 
-    const rows = response.data.values ?? [];
+    const values = (response.data.values ?? []).map((row) => row[0]).filter(Boolean);
 
-    return rows.map((row) => row[0]);
+    catalogCache.set(range, { values, readAt: Date.now() });
+
+    return values;
 }
 
-export async function getPaymentMethods(): Promise<string[]> {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.SPREADSHEET_ID,
-        range: 'Config!D3:D20',
-    });
+export const clearCatalogCache = () => catalogCache.clear();
 
-    const rows = response.data.values ?? [];
-
-    return rows.map((row) => row[0]);
-}
-
-export async function getExpenseTypes(): Promise<string[]> {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.SPREADSHEET_ID,
-        range: 'Config!F3:F20',
-    });
-
-    const rows = response.data.values ?? [];
-
-    return rows.map((row) => row[0]);
-}
-
-export async function getIncomeTypes(): Promise<string[]> {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.SPREADSHEET_ID,
-        range: 'Config!L3:L20',
-    });
-
-    const rows = response.data.values ?? [];
-
-    return rows.map((row) => row[0]);
-}
-
-export async function getIncomeSources(): Promise<string[]> {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.SPREADSHEET_ID,
-        range: 'Config!H3:H20',
-    });
-
-    const rows = response.data.values ?? [];
-
-    return rows.map((row) => row[0]);
-}
+export const getCategories = () => readCatalog('Config!A3:A40');
+export const getPaymentMethods = () => readCatalog('Config!D3:D20');
+export const getExpenseTypes = () => readCatalog('Config!F3:F20');
+export const getIncomeSources = () => readCatalog('Config!H3:H20');
+export const getIncomeTypes = () => readCatalog('Config!L3:L20');
 
 export async function recordIncome(income: {
     /** dd/MM/yyyy, ya resuelto en la zona del usuario. */

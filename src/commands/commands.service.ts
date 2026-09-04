@@ -1,5 +1,6 @@
 import * as z from 'zod';
 import {
+    clearCatalogCache,
     getCategories,
     getExpenseTypes,
     getIncomeSources,
@@ -75,7 +76,8 @@ const HELP = `Soy Finnip 🐷
 • Mándame la foto de un ticket y lo leo.
 • Pregúntame lo que sea: "¿cuánto llevo gastado este mes?".
 • /gasto o /ingreso para registrarlo paso a paso.
-• /cancelar para salirte de un registro a medias.`;
+• /cancelar para salirte de un registro a medias.
+• /recargar si editaste los catálogos de la hoja.`;
 
 /**
  * Atiende comandos y respuestas de un registro guiado.
@@ -85,6 +87,12 @@ export async function handleCommandFlow(chatId: number, text: string): Promise<b
     if (text.startsWith('/')) {
         const [rawCommand, ...args] = text.trim().split(/\s+/);
         const command = rawCommand.slice(1).split('@')[0].toLowerCase();
+
+        if (command === 'recargar') {
+            clearCatalogCache();
+            await sendMessage(chatId, '🔄 Listo, releo los catálogos de tu hoja.');
+            return true;
+        }
 
         if (command === 'cancelar') {
             const had = sessions.delete(chatId);
