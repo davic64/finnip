@@ -50,7 +50,7 @@ const looksLikeQuestion = (text: string) => {
  * Junta el contexto real: el saldo del Tablero, la salud financiera de la hoja
  * y el detalle de los movimientos registrados.
  */
-async function answerQuestion(question: string): Promise<string> {
+async function answerQuestion(question: string, spoken: boolean): Promise<string> {
     const [balance, health, expenses, incomes] = await Promise.all([
         getCurrentBalance(),
         getFinancialHealthData(),
@@ -66,26 +66,27 @@ async function answerQuestion(question: string): Promise<string> {
 
     const context = [health, '', detail.text].join('\n');
 
-    return answerFinancialQuestion(question, context);
+    return answerFinancialQuestion(question, context, spoken);
 }
 
 /**
- * El texto siempre se manda; el audio solo cuando pidieron consejo y solo si
- * fish.audio contesta. Nunca al revés: una nota de voz sola no se puede releer
- * ni buscar, y si el TTS falla el usuario se quedaría sin respuesta.
+ * Los consejos van solo en nota de voz. El texto queda como red: si fish.audio
+ * falla, mejor leerlo que quedarse sin respuesta.
  */
-async function reply(chatId: number, answer: string, withAudio: boolean) {
-    await sendMessage(chatId, answer);
-
-    if (!withAudio) {
-        return;
+async function reply(chatId: number, answer: string, asVoice: boolean) {
+    if (asVoice) {
+        // Generar el audio son otros 5-7s; que al menos se vea "grabando audio…".
+        await sendTyping(chatId, 'record_voice');
     }
 
-    const audio = await synthesize(answer);
+    const audio = asVoice ? await synthesize(answer) : null;
 
     if (audio) {
         await sendVoice(chatId, audio);
+        return;
     }
+
+    await sendMessage(chatId, answer);
 }
 
 export const handleTelegramUpdate = async (update: unknown) => {
@@ -128,14 +129,18 @@ export const handleTelegramUpdate = async (update: unknown) => {
         // entera a DeepSeek (1-4s). Si el texto ya se ve como pregunta, nos la
         // saltamos y vamos directo a responder.
         if (looksLikeQuestion(content)) {
-            await reply(chat.id, await answerQuestion(content), ADVICE_HINTS.test(content));
+            const spoken = ADVICE_HINTS.test(content);
+
+            await reply(chat.id, await answerQuestion(content, spoken), spoken);
             return;
         }
 
         const result = await classifyMessage(content);
 
         if (result.type === 'pregunta') {
-            await reply(chat.id, await answerQuestion(content), ADVICE_HINTS.test(content));
+            const spoken = ADVICE_HINTS.test(content);
+
+            await reply(chat.id, await answerQuestion(content, spoken), spoken);
             return;
         }
 

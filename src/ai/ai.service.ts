@@ -139,7 +139,24 @@ Responde SOLO con el JSON correspondiente, nada más.`;
  * Respuesta conversacional libre: sin JSON ni schema. El contexto lo arma quien
  * llama, esta función solo habla con el modelo.
  */
-export async function answerFinancialQuestion(question: string, context: string): Promise<string> {
+export async function answerFinancialQuestion(
+    question: string,
+    context: string,
+    /** La respuesta se va a leer en voz alta, no a leer con los ojos. */
+    spoken = false
+): Promise<string> {
+    // Un TTS lee "$1,234.56" como "signo de dólar, uno, coma, cuatro...". La única
+    // forma de que suene bien es que el número nunca llegue en dígitos al audio.
+    const style = spoken
+        ? `Esto se va a ESCUCHAR, no a leer. Escribe como hablas.
+NUNCA uses dígitos, signos de $ ni comas de miles: escribe TODAS las cifras con letra.
+Ejemplos: 1200 -> "mil doscientos pesos"; 1143 -> "mil ciento cuarenta y tres pesos";
+1200.20 -> "mil doscientos pesos con veinte centavos"; 15/09 -> "el quince de septiembre".
+Redondea a pesos cuando los centavos no cambien el consejo: es una conversación, no un estado de cuenta.
+Frases cortas, tono de cuate que te aconseja, máximo 4 frases. Nada de listas ni viñetas.`
+        : `Responde en español, máximo 5 líneas, directo y amigable, con los montos como $1,234.56.
+Texto plano: nada de markdown, negritas ni asteriscos, que Telegram los muestra tal cual.`;
+
     const systemPrompt = `Eres Finnip, el asistente de finanzas personales del usuario. Hoy es ${formatDate()}.
 Todos los montos están en pesos mexicanos (MXN).
 
@@ -151,8 +168,7 @@ de abajo o de una cuenta simple sobre ellos. Nunca inventes gastos, deudas, ingr
 no aparezcan. Si los datos no alcanzan, dilo claro y di qué falta; jamás rellenes con estimaciones.
 No des consejos genéricos de internet: si no se apoya en sus números, no lo digas.
 
-Responde en español, máximo 5 líneas, directo y amigable, con los montos como $1,234.56.
-Texto plano: nada de markdown, negritas ni asteriscos, que Telegram los muestra tal cual.
+${style}
 
 DATOS REALES DEL USUARIO:
 ${context}`;

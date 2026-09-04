@@ -26,9 +26,14 @@ export async function synthesize(text: string): Promise<Buffer | null> {
                 text,
                 // Telegram pide OGG/Opus para las notas de voz.
                 format: 'opus',
+                // Un poco de variación para que no suene plano y leído.
+                temperature: 0.9,
+                top_p: 0.9,
+                prosody: { speed: 1.0, volume: 0 },
                 ...(config.FISH_VOICE_ID ? { reference_id: config.FISH_VOICE_ID } : {}),
             }),
-            signal: AbortSignal.timeout(20_000),
+            // Un consejo de ~350 caracteres tarda 5-7s en generarse.
+            signal: AbortSignal.timeout(40_000),
         });
 
         if (!response.ok) {
