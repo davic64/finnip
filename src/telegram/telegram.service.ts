@@ -43,6 +43,20 @@ export async function sendTyping(chatId: number) {
     }).catch((error) => console.error('No se pudo mandar el typing:', error));
 }
 
+/** Nota de voz. Best-effort igual que el TTS: si falla, ya mandamos el texto. */
+export async function sendVoice(chatId: number, audio: Buffer) {
+    const form = new FormData();
+
+    form.append('chat_id', String(chatId));
+    form.append('voice', new Blob([new Uint8Array(audio)], { type: 'audio/ogg' }), 'finnip.ogg');
+
+    const response = await fetch(`${API_URL}/sendVoice`, { method: 'POST', body: form });
+
+    if (!response.ok) {
+        console.error(`Telegram sendVoice falló: ${response.status} ${await response.text()}`);
+    }
+}
+
 export async function downloadFile(fileId: string): Promise<Buffer> {
     const infoResponse = await fetch(`${API_URL}/getFile?file_id=${encodeURIComponent(fileId)}`);
 

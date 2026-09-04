@@ -10,7 +10,8 @@ import {
 import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
 import { extractTextFromImage } from '../drive/drive.service.js';
-import { downloadFile, sendMessage, sendTyping } from '../telegram/telegram.service.js';
+import { downloadFile, sendMessage, sendTyping, sendVoice } from '../telegram/telegram.service.js';
+import { synthesize } from '../tts/tts.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
 import { config } from '../config.js';
 import { toUserMessage } from '../utils/UserError.js';
@@ -68,6 +69,25 @@ async function answerQuestion(question: string): Promise<string> {
     return answerFinancialQuestion(question, context);
 }
 
+/**
+ * El texto siempre se manda; el audio solo cuando pidieron consejo y solo si
+ * fish.audio contesta. Nunca al revés: una nota de voz sola no se puede releer
+ * ni buscar, y si el TTS falla el usuario se quedaría sin respuesta.
+ */
+async function reply(chatId: number, answer: string, withAudio: boolean) {
+    await sendMessage(chatId, answer);
+
+    if (!withAudio) {
+        return;
+    }
+
+    const audio = await synthesize(answer);
+
+    if (audio) {
+        await sendVoice(chatId, audio);
+    }
+}
+
 export const handleTelegramUpdate = async (update: unknown) => {
     const parsed = messageSchema.safeParse(update);
 
@@ -108,14 +128,14 @@ export const handleTelegramUpdate = async (update: unknown) => {
         // entera a DeepSeek (1-4s). Si el texto ya se ve como pregunta, nos la
         // saltamos y vamos directo a responder.
         if (looksLikeQuestion(content)) {
-            await sendMessage(chat.id, await answerQuestion(content));
+            await reply(chat.id, await answerQuestion(content), ADVICE_HINTS.test(content));
             return;
         }
 
         const result = await classifyMessage(content);
 
         if (result.type === 'pregunta') {
-            await sendMessage(chat.id, await answerQuestion(content));
+            await reply(chat.id, await answerQuestion(content), ADVICE_HINTS.test(content));
             return;
         }
 
