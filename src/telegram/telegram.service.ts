@@ -31,6 +31,18 @@ export async function sendMessage(chatId: number, text: string, options?: string
     }
 }
 
+/**
+ * Muestra "escribiendo…" mientras pensamos. Telegram lo apaga solo a los ~5s,
+ * y no lo repetimos: si algo tarda más que eso, el problema es la tardanza.
+ */
+export async function sendTyping(chatId: number) {
+    await fetch(`${API_URL}/sendChatAction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    }).catch((error) => console.error('No se pudo mandar el typing:', error));
+}
+
 export async function downloadFile(fileId: string): Promise<Buffer> {
     const infoResponse = await fetch(`${API_URL}/getFile?file_id=${encodeURIComponent(fileId)}`);
 

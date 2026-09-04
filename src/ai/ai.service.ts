@@ -9,6 +9,10 @@ import * as z from 'zod';
 const client = new OpenAI({
     apiKey: config.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com',
+    // DeepSeek se pone lento por rachas; sin esto un cuelgue deja al usuario
+    // esperando para siempre y sin error.
+    timeout: 30_000,
+    maxRetries: 1,
 });
 
 /** dd/MM/yyyy; solo viene cuando el mensaje menciona una fecha distinta a hoy. */

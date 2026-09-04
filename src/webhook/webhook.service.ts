@@ -2,7 +2,7 @@ import * as z from 'zod';
 import { answerFinancialQuestion, classifyMessage } from '../ai/ai.service.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
 import { extractTextFromImage } from '../drive/drive.service.js';
-import { downloadFile, sendMessage } from '../telegram/telegram.service.js';
+import { downloadFile, sendMessage, sendTyping } from '../telegram/telegram.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
 import { config } from '../config.js';
 import { toUserMessage } from '../utils/UserError.js';
@@ -37,6 +37,8 @@ export const handleTelegramUpdate = async (update: unknown) => {
         if (text && await handleCommandFlow(chat.id, text)) {
             return;
         }
+
+        await sendTyping(chat.id);
 
         let content = text;
 
