@@ -1,9 +1,8 @@
 import OpenAI from 'openai'
 import { config } from '../config.js'
-import { getCategories, getExpenses, getExpenseTypes, getIncomeSources, getIncomeTypes, getIncomes, getPaymentMethods } from '../sheets/sheets.service.js';
+import { getCategories, getExpenseTypes, getIncomeSources, getIncomeTypes, getPaymentMethods } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
 import { UserError } from '../utils/UserError.js';
-import { buildFinancialContext } from './ai.context.js';
 import * as z from 'zod';
 
 const client = new OpenAI({
@@ -136,24 +135,21 @@ Responde SOLO con el JSON correspondiente, nada más.`;
     return parsed;
 }
 
-export async function answerFinancialQuestion(question: string): Promise<string> {
-    const [expenses, incomes] = await Promise.all([getExpenses(), getIncomes()]);
-    const today = formatDate();
-    const context = buildFinancialContext(expenses, incomes, today);
-
-    if (context.omitted > 0) {
-        console.log(`Contexto recortado: ${context.omitted} gastos viejos fuera del detalle`);
-    }
-
-    const systemPrompt = `Eres Finnip, el asistente de finanzas personales del usuario. Hoy es ${today}.
+/**
+ * Respuesta conversacional libre: sin JSON ni schema. El contexto lo arma quien
+ * llama, esta función solo habla con el modelo.
+ */
+export async function answerFinancialQuestion(question: string, context: string): Promise<string> {
+    const systemPrompt = `Eres Finnip, el asistente de finanzas personales del usuario. Hoy es ${formatDate()}.
 Todos los montos están en pesos mexicanos (MXN).
 
 Responde SOLO con los datos que vienen abajo. Nunca inventes cifras ni supongas gastos que no aparecen.
-Si los datos no alcanzan para responder, dilo claro y di qué falta.
+Si los datos no alcanzan para responder, dilo claro y di qué falta; jamás rellenes con estimaciones.
 Responde en español, corto (máximo 4 líneas), amigable y con los montos formateados como $1,234.56.
+Texto plano: nada de markdown, negritas ni asteriscos, que Telegram los muestra tal cual.
 
 DATOS REALES DEL USUARIO:
-${context.text}`;
+${context}`;
 
     const response = await client.chat.completions.create({
         model: 'deepseek-v4-flash',

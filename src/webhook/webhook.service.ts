@@ -1,5 +1,13 @@
 import * as z from 'zod';
 import { answerFinancialQuestion, classifyMessage } from '../ai/ai.service.js';
+import { buildFinancialContext } from '../ai/ai.context.js';
+import {
+    getCurrentBalance,
+    getExpenses,
+    getFinancialHealthData,
+    getIncomes,
+} from '../sheets/sheets.service.js';
+import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
 import { extractTextFromImage } from '../drive/drive.service.js';
 import { downloadFile, sendMessage, sendTyping } from '../telegram/telegram.service.js';
@@ -15,6 +23,42 @@ const messageSchema = z.object({
         photo: z.array(z.object({ file_id: z.string() })).min(1).optional(),
     }),
 });
+
+// Heurística deliberadamente estrecha: un falso positivo contesta en vez de
+// registrar (se pierde el gasto), un falso negativo solo cuesta una llamada de más.
+const QUESTION_STARTERS = /^(cuánto|cuanto|cuál|cual|cómo voy|como voy|qué tal voy|que tal voy|en qué gasto|en que gasto|me alcanza)\b/i;
+
+const looksLikeQuestion = (text: string) =>
+    text.includes('?') || text.includes('¿') || QUESTION_STARTERS.test(text.trim());
+
+/**
+ * Junta el contexto real: el saldo del Tablero, la salud financiera de la hoja
+ * y el detalle de los movimientos registrados.
+ */
+async function answerQuestion(question: string): Promise<string> {
+    const [balance, health, expenses, incomes] = await Promise.all([
+        getCurrentBalance(),
+        getFinancialHealthData(),
+        getExpenses(),
+        getIncomes(),
+    ]);
+
+    const detail = buildFinancialContext(expenses, incomes, formatDate());
+
+    if (detail.omitted > 0) {
+        console.log(`Contexto recortado: ${detail.omitted} gastos viejos fuera del detalle`);
+    }
+
+    const context = [
+        `Dinero disponible hoy (acumulado al cierre del mes en curso): ${balance.toFixed(2)}`,
+        '',
+        health,
+        '',
+        detail.text,
+    ].join('\n');
+
+    return answerFinancialQuestion(question, context);
+}
 
 export const handleTelegramUpdate = async (update: unknown) => {
     const parsed = messageSchema.safeParse(update);
@@ -52,10 +96,18 @@ export const handleTelegramUpdate = async (update: unknown) => {
             return;
         }
 
+        // Preguntar primero "¿esto es pregunta o registro?" cuesta una llamada
+        // entera a DeepSeek (1-4s). Si el texto ya se ve como pregunta, nos la
+        // saltamos y vamos directo a responder.
+        if (looksLikeQuestion(content)) {
+            await sendMessage(chat.id, await answerQuestion(content));
+            return;
+        }
+
         const result = await classifyMessage(content);
 
         if (result.type === 'pregunta') {
-            await sendMessage(chat.id, await answerFinancialQuestion(content));
+            await sendMessage(chat.id, await answerQuestion(content));
             return;
         }
 
