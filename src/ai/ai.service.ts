@@ -1,6 +1,9 @@
 import OpenAI from 'openai'
 import { config } from '../config.js'
-import { getCategories, getExpenseTypes, getIncomeSources, getIncomeTypes } from '../sheets/sheets.service.js';
+import { getCategories, getExpenses, getExpenseTypes, getIncomeSources, getIncomeTypes, getIncomes, getPaymentMethods } from '../sheets/sheets.service.js';
+import formatDate from '../utils/formatDate.js';
+import { UserError } from '../utils/UserError.js';
+import { buildFinancialContext } from './ai.context.js';
 import * as z from 'zod';
 
 const client = new OpenAI({
@@ -8,12 +11,8 @@ const client = new OpenAI({
     baseURL: 'https://api.deepseek.com',
 });
 
-const expenseExtractionSchema = z.object({
-    amount: z.number(),
-    description: z.string(),
-    category: z.string(),
-    expenseType: z.string(),
-});
+/** dd/MM/yyyy; solo viene cuando el mensaje menciona una fecha distinta a hoy. */
+const dateSchema = z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/).optional();
 
 const gastoResultSchema = z.object({
     type: z.literal('gasto'),
@@ -21,6 +20,8 @@ const gastoResultSchema = z.object({
     description: z.string(),
     category: z.string(),
     expenseType: z.string(),
+    method: z.string().optional(),
+    date: dateSchema,
 });
 
 const ingresoResultSchema = z.object({
@@ -29,34 +30,69 @@ const ingresoResultSchema = z.object({
     description: z.string(),
     source: z.string(),
     incomeType: z.string(),
+    date: dateSchema,
+});
+
+const preguntaResultSchema = z.object({
+    type: z.literal('pregunta'),
 });
 
 const transactionResultSchema = z.discriminatedUnion('type', [gastoResultSchema, ingresoResultSchema]);
+const messageResultSchema = z.discriminatedUnion('type', [
+    gastoResultSchema,
+    ingresoResultSchema,
+    preguntaResultSchema,
+]);
 
-export async function extractTransactionFromText(text: string) {
-    const [categories, expenseTypes, incomeSources, incomeTypes] = await Promise.all([
+export type Transaction = z.infer<typeof transactionResultSchema>;
+export type MessageResult = z.infer<typeof messageResultSchema>;
+
+/** La IA a veces inventa valores fuera del catálogo de la hoja. */
+function check(valid: string[], value: string, label: string) {
+    if (!valid.includes(value)) {
+        throw new UserError(
+            `No supe en qué ${label} ponerlo 🤔 Me salió "${value}", que no está en tu hoja.\n\nOpciones: ${valid.join(', ')}`
+        );
+    }
+}
+
+export async function classifyMessage(text: string): Promise<MessageResult> {
+    const [categories, expenseTypes, incomeSources, incomeTypes, paymentMethods] = await Promise.all([
         getCategories(),
         getExpenseTypes(),
         getIncomeSources(),
         getIncomeTypes(),
+        getPaymentMethods(),
     ]);
 
     const systemPrompt = `Eres un asistente que clasifica mensajes en español sobre finanzas personales.
+Hoy es ${formatDate()} (formato dd/MM/yyyy).
 
-Primero decide si el mensaje describe un GASTO (dinero que sale) o un INGRESO (dinero que entra).
+Primero decide si el mensaje describe un GASTO (dinero que sale), un INGRESO (dinero que entra)
+o si es una PREGUNTA sobre las finanzas del usuario (cuánto lleva gastado, en qué gasta más,
+cuánto le queda, comparaciones entre meses, etc.).
+
+Si es una PREGUNTA, responde solo con:
+{"type": "pregunta"}
 
 Si es un GASTO, responde con este JSON:
-{"type": "gasto", "amount": number, "description": string, "category": string, "expenseType": string}
+{"type": "gasto", "amount": number, "description": string, "category": string, "expenseType": string, "method": string, "date": string}
 Categorías válidas: ${categories.join(', ')}
 Tipos de gasto válidos: ${expenseTypes.join(', ')}
 - Fijo: gasto recurrente y predecible, mismo monto aproximado cada mes.
 - Variable: gasto necesario pero que cambia de monto cada vez.
 - Hormiga: gasto pequeño e impulsivo, no esencial, que suma con el tiempo.
+Métodos de pago válidos: ${paymentMethods.join(', ')}
+- "method" solo si el mensaje dice cómo se pagó (efectivo, tarjeta, transferencia...). Si no lo dice, omítelo.
 
 Si es un INGRESO, responde con este JSON:
-{"type": "ingreso", "amount": number, "description": string, "source": string, "incomeType": string}
+{"type": "ingreso", "amount": number, "description": string, "source": string, "incomeType": string, "date": string}
 Fuentes válidas: ${incomeSources.join(', ')}
 Tipos de ingreso válidos: ${incomeTypes.join(', ')}
+
+Sobre "date": solo inclúyelo si el mensaje menciona una fecha distinta de hoy ("ayer", "el lunes",
+"el 3 de marzo", "antier"). Resuélvela contra la fecha de hoy y devuélvela en dd/MM/yyyy.
+Si el mensaje no menciona fecha, omite el campo.
 
 Responde SOLO con el JSON correspondiente, nada más.`;
 
@@ -75,23 +111,59 @@ Responde SOLO con el JSON correspondiente, nada más.`;
         throw new Error('DeepSeek no regresó contenido');
     }
 
-    const parsed = transactionResultSchema.parse(JSON.parse(raw));
+    const parsed = messageResultSchema.parse(JSON.parse(raw));
+
+    if (parsed.type === 'pregunta') {
+        return parsed;
+    }
 
     if (parsed.type === 'gasto') {
-        if (!categories.includes(parsed.category)) {
-            throw new Error(`Categoría inválida: ${parsed.category}`);
-        }
-        if (!expenseTypes.includes(parsed.expenseType)) {
-            throw new Error(`Tipo de gasto inválido: ${parsed.expenseType}`);
+        check(categories, parsed.category, 'categoría');
+        check(expenseTypes, parsed.expenseType, 'tipo de gasto');
+
+        if (parsed.method) {
+            check(paymentMethods, parsed.method, 'método de pago');
         }
     } else {
-        if (!incomeSources.includes(parsed.source)) {
-            throw new Error(`Fuente inválida: ${parsed.source}`);
-        }
-        if (!incomeTypes.includes(parsed.incomeType)) {
-            throw new Error(`Tipo de ingreso inválido: ${parsed.incomeType}`);
-        }
+        check(incomeSources, parsed.source, 'fuente de ingreso');
+        check(incomeTypes, parsed.incomeType, 'tipo de ingreso');
     }
 
     return parsed;
+}
+
+export async function answerFinancialQuestion(question: string): Promise<string> {
+    const [expenses, incomes] = await Promise.all([getExpenses(), getIncomes()]);
+    const today = formatDate();
+    const context = buildFinancialContext(expenses, incomes, today);
+
+    if (context.omitted > 0) {
+        console.log(`Contexto recortado: ${context.omitted} gastos viejos fuera del detalle`);
+    }
+
+    const systemPrompt = `Eres Finnip, el asistente de finanzas personales del usuario. Hoy es ${today}.
+Todos los montos están en pesos mexicanos (MXN).
+
+Responde SOLO con los datos que vienen abajo. Nunca inventes cifras ni supongas gastos que no aparecen.
+Si los datos no alcanzan para responder, dilo claro y di qué falta.
+Responde en español, corto (máximo 4 líneas), amigable y con los montos formateados como $1,234.56.
+
+DATOS REALES DEL USUARIO:
+${context.text}`;
+
+    const response = await client.chat.completions.create({
+        model: 'deepseek-v4-flash',
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: question },
+        ],
+    });
+
+    const answer = response.choices[0].message.content?.trim();
+
+    if (!answer) {
+        throw new Error('DeepSeek no regresó respuesta a la pregunta');
+    }
+
+    return answer;
 }
