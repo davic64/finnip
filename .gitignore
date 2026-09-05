@@ -29,3 +29,6 @@ lerna-debug.log*
 
 # misc
 .DS_Store
+
+# estado persistido
+data/

@@ -27,31 +27,47 @@ const asLines = (totals: [string, number][]) =>
  * ponytail: quincenas fijas los días 15 y último del mes, como el propio Tablero.
  * Si algún día cobras en otras fechas, esto se vuelve config.
  */
-function buildPace(monthExpenses: ExpenseRow[], today: string, balance: number) {
+export function computePace(monthExpenses: ExpenseRow[], today: string, balance: number) {
     const day = Number(today.slice(0, 2));
     const month = Number(today.slice(3, 5));
     const year = Number(today.slice(6));
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    const spent = monthExpenses.reduce((total, expense) => total + expense.amount, 0);
-    const perDay = spent / day;
+    const sum = (rows: ExpenseRow[]) => rows.reduce((total, expense) => total + expense.amount, 0);
+    const spent = sum(monthExpenses);
 
     const nextPayday = day < 15 ? 15 : daysInMonth;
     const daysLeft = nextPayday - day;
-    // El día de la quincena ya cobras, así que el saldo tiene que estirarse los días previos.
-    const safePerDay = daysLeft > 0 ? balance / daysLeft : balance;
 
-    const fortnight = day <= 15 ? 'días 1-15' : `días 16-${daysInMonth}`;
-    const fortnightSpent = monthExpenses
-        .filter((expense) => (Number(expense.date.slice(0, 2)) <= 15) === (day <= 15))
-        .reduce((total, expense) => total + expense.amount, 0);
+    return {
+        day,
+        daysInMonth,
+        spent,
+        perDay: spent / day,
+        projection: (spent / day) * daysInMonth,
+        nextPayday,
+        daysLeft,
+        // El día de la quincena ya cobras, así que el saldo se estira los días previos.
+        safePerDay: daysLeft > 0 ? balance / daysLeft : balance,
+        todaySpent: sum(monthExpenses.filter((expense) => Number(expense.date.slice(0, 2)) === day)),
+        fortnight: day <= 15 ? 'días 1-15' : `días 16-${daysInMonth}`,
+        fortnightSpent: sum(monthExpenses.filter(
+            (expense) => (Number(expense.date.slice(0, 2)) <= 15) === (day <= 15)
+        )),
+    };
+}
+
+function buildPace(monthExpenses: ExpenseRow[], today: string, balance: number) {
+    const {
+        day, daysInMonth, spent, perDay, projection, nextPayday, daysLeft, safePerDay, fortnight, fortnightSpent,
+    } = computePace(monthExpenses, today, balance);
 
     return [
         'RITMO Y PLANEACIÓN:',
         `- Hoy es el día ${day} de ${daysInMonth} del mes`,
         `- Dinero disponible ahora: ${balance.toFixed(2)}`,
         `- Gastado en lo que va del mes: ${spent.toFixed(2)} (promedio ${perDay.toFixed(2)} por día)`,
-        `- Proyección de gasto a fin de mes a este ritmo: ${(perDay * daysInMonth).toFixed(2)}`,
+        `- Proyección de gasto a fin de mes a este ritmo: ${projection.toFixed(2)}`,
         `- Quincena en curso (${fortnight}): lleva gastado ${fortnightSpent.toFixed(2)}`,
         `- Próxima quincena: día ${nextPayday}, faltan ${daysLeft} días`,
         `- Puede gastar hasta ${safePerDay.toFixed(2)} por día sin quedarse sin saldo antes de cobrar`,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildFinancialContext } from './ai.context.js';
+import { buildFinancialContext, computePace } from './ai.context.js';
 
 const expense = (date: string, category: string, amount: number) => ({
     date,
@@ -58,6 +58,40 @@ test('pasado el 15, la quincena que viene es fin de mes', () => {
     assert.match(text, /Quincena en curso \(días 16-30\): lleva gastado 100\.00/);
     assert.match(text, /Próxima quincena: día 30, faltan 5 días/);
     assert.match(text, /hasta 200\.00 por día/);
+});
+
+test('computePace separa lo gastado hoy de lo del mes', () => {
+    const pace = computePace(
+        [
+            expense('01/09/2026', 'Comida', 300),
+            expense('04/09/2026', 'Comida', 120),
+            expense('04/09/2026', 'Transporte', 80),
+        ],
+        '04/09/2026',
+        5500
+    );
+
+    assert.equal(pace.spent, 500);
+    assert.equal(pace.todaySpent, 200);
+    assert.equal(pace.daysLeft, 11);
+    assert.equal(pace.safePerDay, 500);
+    assert.equal(pace.nextPayday, 15);
+});
+
+test('el día 15 ya cobraste, así que el siguiente pago es fin de mes', () => {
+    const pace = computePace([], '15/09/2026', 900);
+
+    assert.equal(pace.nextPayday, 30);
+    assert.equal(pace.daysLeft, 15);
+    assert.equal(pace.safePerDay, 60);
+});
+
+test('el último día del mes no divide entre cero', () => {
+    const pace = computePace([], '30/09/2026', 900);
+
+    assert.equal(pace.daysLeft, 0);
+    assert.equal(pace.safePerDay, 900);
+    assert.ok(Number.isFinite(pace.safePerDay));
 });
 
 test('avisa cuántas filas quedaron fuera del detalle', () => {

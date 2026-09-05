@@ -192,6 +192,54 @@ export const getExpenseTypes = () => readCatalog('Config!F3:F20');
 export const getIncomeSources = () => readCatalog('Config!H3:H20');
 export const getIncomeTypes = () => readCatalog('Config!L3:L20');
 
+// El id numérico de cada hoja no cambia nunca; se pide una vez y se guarda.
+const sheetIds = new Map<string, number>();
+
+async function getSheetId(title: string): Promise<number> {
+    if (sheetIds.size === 0) {
+        const response = await sheets.spreadsheets.get({
+            spreadsheetId: config.SPREADSHEET_ID,
+            fields: 'sheets.properties(sheetId,title)',
+        });
+
+        for (const sheet of response.data.sheets ?? []) {
+            const properties = sheet.properties;
+
+            if (properties?.title && properties.sheetId !== null && properties.sheetId !== undefined) {
+                sheetIds.set(properties.title, properties.sheetId);
+            }
+        }
+    }
+
+    const id = sheetIds.get(title);
+
+    if (id === undefined) {
+        throw new Error(`No existe la hoja ${title}`);
+    }
+
+    return id;
+}
+
+/** Borra la fila completa (no la vacía) para no dejar huecos a media hoja. */
+export async function deleteRow(title: string, row: number) {
+    await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: config.SPREADSHEET_ID,
+        requestBody: {
+            requests: [{
+                deleteDimension: {
+                    range: {
+                        sheetId: await getSheetId(title),
+                        dimension: 'ROWS',
+                        // La API cuenta desde 0 y el rango excluye el final.
+                        startIndex: row - 1,
+                        endIndex: row,
+                    },
+                },
+            }],
+        },
+    });
+}
+
 export async function recordIncome(income: {
     /** dd/MM/yyyy, ya resuelto en la zona del usuario. */
     date: string;
@@ -231,6 +279,8 @@ export async function recordIncome(income: {
             ]]
         }
     });
+
+    return row;
 }
 
 export async function recordExpense(expense: {
@@ -276,4 +326,6 @@ export async function recordExpense(expense: {
             ]]
         }
     });
+
+    return row;
 }

@@ -8,7 +8,7 @@ import {
     getPaymentMethods,
 } from '../sheets/sheets.service.js';
 import { sendMessage } from '../telegram/telegram.service.js';
-import { recordAndConfirm } from '../transactions/transactions.service.js';
+import { recordAndConfirm, undoLast } from '../transactions/transactions.service.js';
 
 type Answers = Record<string, string>;
 
@@ -77,6 +77,7 @@ const HELP = `Soy Finnip 🐷
 • Pregúntame lo que sea: "¿cuánto llevo gastado este mes?".
 • /consejo y te mando un consejo en audio con tus números.
 • /gasto o /ingreso para registrarlo paso a paso.
+• /deshacer borra el último movimiento que registré.
 • /cancelar para salirte de un registro a medias.
 • /recargar si editaste los catálogos de la hoja.`;
 
@@ -88,6 +89,11 @@ export async function handleCommandFlow(chatId: number, text: string): Promise<b
     if (text.startsWith('/')) {
         const [rawCommand, ...args] = text.trim().split(/\s+/);
         const command = rawCommand.slice(1).split('@')[0].toLowerCase();
+
+        if (command === 'deshacer') {
+            await sendMessage(chatId, await undoLast(chatId));
+            return true;
+        }
 
         if (command === 'recargar') {
             clearCatalogCache();

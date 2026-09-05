@@ -8,6 +8,8 @@ export const configSchema = z.object({
     SPREADSHEET_ID: z.string().min(1, "SPREADSHEET_ID is required"),
     DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
     TIMEZONE: z.string().min(1).default("America/Mexico_City"),
+    // Monta un volumen de Dokploy sobre esta ruta para que aguante los redeploys.
+    STATE_FILE: z.string().min(1).default("./data/state.json"),
     // Opcionales: sin llave, los consejos llegan solo en texto y el bot sigue vivo.
     FISH_AUDIO_API_KEY: z.string().min(1).optional(),
     FISH_VOICE_ID: z.string().min(1).optional(),

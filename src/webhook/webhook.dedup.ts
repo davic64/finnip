@@ -1,20 +1,19 @@
+import { persist, state } from '../state/state.service.js';
+
 const MAX_SIZE = 1000;
-const seenUpdates = new Set<number>();
 
 export function isDuplicate(updateId: number): boolean {
-    if (seenUpdates.has(updateId)) {
+    if (state.seenUpdates.includes(updateId)) {
         return true;
     }
 
-    seenUpdates.add(updateId);
+    state.seenUpdates.push(updateId);
 
-    if (seenUpdates.size > MAX_SIZE) {
-        const iterator = seenUpdates.values();
-        const oldestUpdateId = iterator.next().value;
-        if (oldestUpdateId !== undefined) {
-            seenUpdates.delete(oldestUpdateId);
-        }
+    if (state.seenUpdates.length > MAX_SIZE) {
+        state.seenUpdates.shift();
     }
+
+    persist();
 
     return false;
 }

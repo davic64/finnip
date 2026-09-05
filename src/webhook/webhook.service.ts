@@ -9,7 +9,7 @@ import {
 } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
-import { extractTextFromImage } from '../drive/drive.service.js';
+import { extractTextFromImage } from '../vision/vision.service.js';
 import { downloadFile, keepTyping, sendMessage, sendVoice } from '../telegram/telegram.service.js';
 import { synthesize } from '../tts/tts.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
@@ -131,7 +131,7 @@ export const handleTelegramUpdate = async (update: unknown) => {
         if (!content && photo) {
             const largest = photo[photo.length - 1];
             const image = await downloadFile(largest.file_id);
-            content = await extractTextFromImage(image, 'image/jpeg');
+            content = await extractTextFromImage(image);
         }
 
         if (!content) {

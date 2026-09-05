@@ -9,7 +9,8 @@ export const auth = new google.auth.GoogleAuth({
     credentials,
     scopes: [
         'https://www.googleapis.com/auth/spreadsheets',
-        // drive.file basta: solo tocamos archivos que este bot crea.
-        'https://www.googleapis.com/auth/drive.file',
+        // Cloud Vision (OCR de tickets). Drive ya no se usa: las Service Accounts
+        // no tienen cuota de almacenamiento y no podían ni crear el archivo.
+        'https://www.googleapis.com/auth/cloud-platform',
     ],
 });
