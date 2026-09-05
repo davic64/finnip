@@ -9,12 +9,12 @@ import {
 } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
-import { extractTextFromImage } from '../vision/vision.service.js';
+import { describeReceipt } from '../vision/vision.service.js';
 import { downloadFile, keepTyping, sendMessage, sendVoice } from '../telegram/telegram.service.js';
 import { synthesize } from '../tts/tts.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
 import { config } from '../config.js';
-import { toUserMessage } from '../utils/UserError.js';
+import { toUserMessage, UserError } from '../utils/UserError.js';
 
 const messageSchema = z.object({
     message: z.object({
@@ -126,13 +126,23 @@ export const handleTelegramUpdate = async (update: unknown) => {
 
         stopIndicator = keepTyping(chat.id, 'typing');
 
-        let content = text;
+        if (!text && photo) {
+            // Telegram manda la foto en varios tamaños; el último es el más grande.
+            const image = await downloadFile(photo[photo.length - 1].file_id);
+            const description = await describeReceipt(image, 'image/jpeg');
+            const receipt = await classifyMessage(description);
 
-        if (!content && photo) {
-            const largest = photo[photo.length - 1];
-            const image = await downloadFile(largest.file_id);
-            content = await extractTextFromImage(image);
+            // Un ticket es un movimiento, nunca una pregunta: si la IA dice otra
+            // cosa es que no entendió la foto.
+            if (receipt.type === 'pregunta') {
+                throw new UserError(`No le entendí a ese ticket 🧾 Leí: "${description}"`);
+            }
+
+            await recordAndConfirm(chat.id, receipt);
+            return;
         }
+
+        const content = text;
 
         if (!content) {
             return;
