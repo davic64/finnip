@@ -2,3 +2,5 @@ onlyBuiltDependencies:
   - esbuild
 allowBuilds:
   esbuild: true
+  # no requiere script de instalación para la API de Node
+  tesseract.js: false

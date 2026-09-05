@@ -13,8 +13,6 @@ export const configSchema = z.object({
     // Opcionales: sin llave, los consejos llegan solo en texto y el bot sigue vivo.
     FISH_AUDIO_API_KEY: z.string().min(1).optional(),
     FISH_VOICE_ID: z.string().min(1).optional(),
-    // Lectura de fotos de tickets. Sin llave, el bot lo dice y pide el texto.
-    GEMINI_API_KEY: z.string().min(1).optional(),
     // Lista de chat ids separados por coma. Sin esto cualquiera que encuentre
     // el bot podría escribir en la hoja.
     ALLOWED_CHAT_IDS: z

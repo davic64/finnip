@@ -9,7 +9,7 @@ import {
 } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
 import { handleCommandFlow } from '../commands/commands.service.js';
-import { describeReceipt } from '../vision/vision.service.js';
+import { readReceipt } from '../ocr/ocr.service.js';
 import { downloadFile, keepTyping, sendMessage, sendVoice } from '../telegram/telegram.service.js';
 import { synthesize } from '../tts/tts.service.js';
 import { recordAndConfirm } from '../transactions/transactions.service.js';
@@ -129,7 +129,7 @@ export const handleTelegramUpdate = async (update: unknown) => {
         if (!text && photo) {
             // Telegram manda la foto en varios tamaños; el último es el más grande.
             const image = await downloadFile(photo[photo.length - 1].file_id);
-            const description = await describeReceipt(image, 'image/jpeg');
+            const description = await readReceipt(image);
             const receipt = await classifyMessage(description);
 
             // Un ticket es un movimiento, nunca una pregunta: si la IA dice otra

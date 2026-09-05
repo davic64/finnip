@@ -32,3 +32,6 @@ lerna-debug.log*
 
 # estado persistido
 data/
+
+# modelo de OCR descargado en runtime
+*.traineddata
