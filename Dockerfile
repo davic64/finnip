@@ -17,7 +17,9 @@ ENV CI=true
 
 WORKDIR /app
 COPY --from=build /app/dist ./dist
-COPY package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml también aquí: trae la aprobación de build scripts. Sin él,
+# pnpm corta con ERR_PNPM_IGNORED_BUILDS por tesseract.js y el deploy falla.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 EXPOSE 8787
