@@ -5,9 +5,14 @@ import formatDate from '../utils/formatDate.js';
 import { UserError } from '../utils/UserError.js';
 import * as z from 'zod';
 
+// Con OPENROUTER_API_KEY en el entorno se cambia de proveedor sin tocar código.
+const viaOpenRouter = Boolean(config.OPENROUTER_API_KEY);
+// OpenRouter pide el modelo con prefijo de proveedor; DeepSeek directo, sin él.
+const MODEL = config.AI_MODEL ?? (viaOpenRouter ? 'deepseek/deepseek-chat' : 'deepseek-chat');
+
 const client = new OpenAI({
-    apiKey: config.DEEPSEEK_API_KEY,
-    baseURL: 'https://api.deepseek.com',
+    apiKey: config.OPENROUTER_API_KEY ?? config.DEEPSEEK_API_KEY,
+    baseURL: viaOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://api.deepseek.com',
     // DeepSeek se pone lento por rachas; sin esto un cuelgue deja al usuario
     // esperando para siempre y sin error.
     timeout: 30_000,
@@ -102,7 +107,7 @@ Responde SOLO con el JSON correspondiente, nada más.`;
     const response = await client.chat.completions.create({
         // Ver la nota en answerFinancialQuestion: extraer un JSON de una frase no
         // necesita razonamiento. Medido 685ms contra 1884ms, misma precisión.
-        model: 'deepseek-chat',
+        model: MODEL,
         response_format: { type: 'json_object' },
         messages: [
             { role: 'system', content: systemPrompt },
@@ -187,7 +192,7 @@ ${context}`;
         // calculados en el contexto. Medido: 962ms contra 5683ms.
         // Nada de max_tokens: en un modelo de razonamiento el tope se lo come el
         // pensamiento y la respuesta llega vacía.
-        model: 'deepseek-chat',
+        model: MODEL,
         messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: question },
