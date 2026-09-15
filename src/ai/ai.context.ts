@@ -1,4 +1,4 @@
-import type { ExpenseRow, IncomeRow } from '../sheets/sheets.service.js';
+import type { ExpenseRow, Goal, IncomeRow } from '../sheets/sheets.service.js';
 
 // ponytail: tope de filas de detalle que le mandamos al modelo. Los totales
 // siempre salen de TODAS las filas, esto solo recorta el desglose línea por línea.
@@ -113,4 +113,28 @@ export function buildFinancialContext(
             ),
         ].join('\n'),
     };
+}
+
+/**
+ * Las metas, para que pueda contestar "¿cuánto aparto esta quincena?".
+ * Va aparte de buildFinancialContext porque se concatena igual que la salud
+ * financiera: son datos de la hoja, no cuentas sobre los movimientos.
+ */
+export function formatGoals(goals: Goal[]): string {
+    if (!goals.length) {
+        return 'METAS DE AHORRO: no tiene ninguna registrada.';
+    }
+
+    return [
+        'METAS DE AHORRO (hoja Metas). Lo ya ahorrado YA salió de su dinero disponible.',
+        'Cobra quincenal (día 15 y último): lo que toca por quincena es la mitad de la aportación mensual.',
+        ...goals.map((goal) => {
+            const missing = Math.max(0, goal.target - goal.saved);
+            const plan = goal.deadline
+                ? `fecha objetivo ${goal.deadline}, requiere ${goal.monthly.toFixed(2)} al mes = ${(goal.monthly / 2).toFixed(2)} por quincena`
+                : 'SIN fecha objetivo: la hoja no calcula aportación mensual, no te inventes una; sugiérele ponerle fecha';
+
+            return `- ${goal.name}: lleva ${goal.saved.toFixed(2)} de ${goal.target.toFixed(2)}, faltan ${missing.toFixed(2)}; ${plan}`;
+        }),
+    ].join('\n');
 }

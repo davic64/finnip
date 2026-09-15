@@ -13,7 +13,13 @@ import { config } from '../config.js';
  */
 type State = {
     seenUpdates: number[];
-    lastRecords: Record<string, { sheet: string; row: number; summary: string }>;
+    lastRecords: Record<string, {
+        sheet: string;
+        row: number;
+        summary: string;
+        /** Solo en apartados: la fila de Metas y el monto que hay que restar al deshacer. */
+        goal?: { row: number; amount: number };
+    }>;
 };
 
 const EMPTY: State = { seenUpdates: [], lastRecords: {} };

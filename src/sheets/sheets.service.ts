@@ -329,3 +329,103 @@ export async function recordExpense(expense: {
 
     return row;
 }
+/**
+ * Metas de ahorro. El rango es fijo a propósito: el Tablero lee
+ * "Ahorro acumulado en metas" como SUM(Metas!$C$2:$C$21), así que una meta
+ * fuera de esas filas existiría pero no contaría en ningún lado.
+ */
+const GOALS_FIRST_ROW = 2;
+const GOALS_LAST_ROW = 21;
+
+export type Goal = {
+    row: number;
+    name: string;
+    target: number;
+    saved: number;
+    /** dd/MM/yyyy, o "" si la meta no tiene fecha objetivo. */
+    deadline: string;
+    /**
+     * Aportación mensual requerida, calculada por la hoja (col F).
+     * OJO: sin fecha objetivo la hoja mete AHÍ todo lo que falta, no una
+     * mensualidad. Solo sirve cuando `deadline` no está vacío.
+     */
+    monthly: number;
+};
+
+export async function getGoals(): Promise<Goal[]> {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: `Metas!A${GOALS_FIRST_ROW}:F${GOALS_LAST_ROW}`,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+
+    return (response.data.values ?? [])
+        .map((cells, index) => ({
+            row: GOALS_FIRST_ROW + index,
+            name: String(cells[0] ?? '').trim(),
+            target: Number(cells[1]) || 0,
+            saved: Number(cells[2]) || 0,
+            deadline: String(cells[3] ?? '').trim(),
+            monthly: Number(cells[5]) || 0,
+        }))
+        .filter((goal) => goal.name);
+}
+
+/** Busca por nombre sin exigir mayúsculas ni acentos exactos. */
+export const findGoal = (goals: Goal[], name: string) =>
+    goals.find((goal) => goal.name.localeCompare(name.trim(), 'es', { sensitivity: 'base' }) === 0);
+
+export async function createGoal(goal: { name: string; target: number; deadline: string }): Promise<Goal> {
+    const goals = await getGoals();
+
+    if (findGoal(goals, goal.name)) {
+        throw new UserError(`Ya tienes una meta que se llama "${goal.name}" 🤔`);
+    }
+
+    const taken = new Set(goals.map((existing) => existing.row));
+    let row = GOALS_FIRST_ROW;
+
+    while (taken.has(row)) {
+        row++;
+    }
+
+    if (row > GOALS_LAST_ROW) {
+        throw new UserError(`Ya tienes ${GOALS_LAST_ROW - GOALS_FIRST_ROW + 1} metas, que es el tope de la hoja. Borra una de Metas y volvemos.`);
+    }
+
+    // Solo A:D. De E en adelante la hoja ya trae sus fórmulas hasta la fila 21.
+    await sheets.spreadsheets.values.update({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: `Metas!A${row}:D${row}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[goal.name, goal.target, 0, goal.deadline]] },
+    });
+
+    return { row, name: goal.name, target: goal.target, saved: 0, deadline: goal.deadline, monthly: 0 };
+}
+
+/**
+ * Suma al "Ahorrado a la fecha" de una meta (con delta negativo, resta).
+ *
+ * ponytail: lee-y-escribe sin candado. Es un bot de un solo usuario; si algún
+ * día hay dos, esto necesita un batchUpdate con fórmula o un lock.
+ */
+export async function addToGoal(row: number, delta: number): Promise<number> {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: `Metas!C${row}`,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+    });
+
+    const total = Math.max(0, (Number(response.data.values?.[0]?.[0]) || 0) + delta);
+
+    await sheets.spreadsheets.values.update({
+        spreadsheetId: config.SPREADSHEET_ID,
+        range: `Metas!C${row}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[total]] },
+    });
+
+    return total;
+}

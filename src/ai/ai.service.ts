@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { config } from '../config.js'
-import { getCategories, getExpenseTypes, getIncomeSources, getIncomeTypes, getPaymentMethods } from '../sheets/sheets.service.js';
+import { getCategories, getExpenseTypes, getGoals, getIncomeSources, getIncomeTypes, getPaymentMethods } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
 import { UserError } from '../utils/UserError.js';
 import * as z from 'zod';
@@ -41,6 +41,13 @@ const ingresoResultSchema = z.object({
     date: dateSchema,
 });
 
+const ahorroResultSchema = z.object({
+    type: z.literal('ahorro'),
+    amount: z.number(),
+    goal: z.string(),
+    date: dateSchema,
+});
+
 const preguntaResultSchema = z.object({
     type: z.literal('pregunta'),
 });
@@ -49,6 +56,7 @@ const transactionResultSchema = z.discriminatedUnion('type', [gastoResultSchema,
 const messageResultSchema = z.discriminatedUnion('type', [
     gastoResultSchema,
     ingresoResultSchema,
+    ahorroResultSchema,
     preguntaResultSchema,
 ]);
 
@@ -65,20 +73,35 @@ function check(valid: string[], value: string, label: string) {
 }
 
 export async function classifyMessage(text: string): Promise<MessageResult> {
-    const [categories, expenseTypes, incomeSources, incomeTypes, paymentMethods] = await Promise.all([
+    const [categories, expenseTypes, incomeSources, incomeTypes, paymentMethods, goals] = await Promise.all([
         getCategories(),
         getExpenseTypes(),
         getIncomeSources(),
         getIncomeTypes(),
         getPaymentMethods(),
+        getGoals(),
     ]);
+
+    const goalNames = goals.map((goal) => goal.name);
+
+    // Sin metas registradas no se le ofrece la opción: si no existe el destino,
+    // "aparta 500" tiene que caer como gasto normal y no como un tipo imposible.
+    const savingsPrompt = goalNames.length
+        ? `
+
+Si el mensaje dice APARTAR, AHORRAR o GUARDAR dinero para una de sus metas, responde con:
+{"type": "ahorro", "amount": number, "goal": string, "date": string}
+Metas válidas: ${goalNames.join(', ')}
+Usa el nombre de la meta EXACTAMENTE como aparece en esa lista.
+Si menciona una meta que no está en la lista, trátalo como GASTO normal.`
+        : '';
 
     const systemPrompt = `Eres un asistente que clasifica mensajes en español sobre finanzas personales.
 Hoy es ${formatDate()} (formato dd/MM/yyyy).
 
-Primero decide si el mensaje describe un GASTO (dinero que sale), un INGRESO (dinero que entra)
-o si es una PREGUNTA sobre las finanzas del usuario (cuánto lleva gastado, en qué gasta más,
-cuánto le queda, comparaciones entre meses, etc.).
+Primero decide si el mensaje describe un GASTO (dinero que sale), un INGRESO (dinero que entra),
+un APARTADO a una meta de ahorro, o si es una PREGUNTA sobre las finanzas del usuario (cuánto
+lleva gastado, en qué gasta más, cuánto le queda, comparaciones entre meses, etc.).
 
 Si es una PREGUNTA, responde solo con:
 {"type": "pregunta"}
@@ -97,6 +120,7 @@ Si es un INGRESO, responde con este JSON:
 {"type": "ingreso", "amount": number, "description": string, "source": string, "incomeType": string, "date": string}
 Fuentes válidas: ${incomeSources.join(', ')}
 Tipos de ingreso válidos: ${incomeTypes.join(', ')}
+${savingsPrompt}
 
 Sobre "date": solo inclúyelo si el mensaje menciona una fecha distinta de hoy ("ayer", "el lunes",
 "el 3 de marzo", "antier"). Resuélvela contra la fecha de hoy y devuélvela en dd/MM/yyyy.
@@ -124,6 +148,12 @@ Responde SOLO con el JSON correspondiente, nada más.`;
     const parsed = messageResultSchema.parse(JSON.parse(raw));
 
     if (parsed.type === 'pregunta') {
+        return parsed;
+    }
+
+    if (parsed.type === 'ahorro') {
+        check(goalNames, parsed.goal, 'meta');
+
         return parsed;
     }
 

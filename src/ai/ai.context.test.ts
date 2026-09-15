@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildFinancialContext, computePace } from './ai.context.js';
+import { buildFinancialContext, computePace, formatGoals } from './ai.context.js';
 
 const expense = (date: string, category: string, amount: number) => ({
     date,
@@ -101,4 +101,30 @@ test('avisa cuántas filas quedaron fuera del detalle', () => {
     assert.equal(omitted, 5);
     // Los totales sí incluyen las 405, aunque el detalle esté recortado.
     assert.match(text, /2026-09: 405\.00/);
+});
+
+const goal = (name: string, target: number, saved: number, deadline: string, monthly: number) => ({
+    row: 2, name, target, saved, deadline, monthly,
+});
+
+test('con fecha objetivo parte la aportación mensual en dos quincenas', () => {
+    const text = formatGoals([goal('Vacaciones', 30000, 4500, '01/06/2027', 3000)]);
+
+    assert.match(text, /Vacaciones: lleva 4500\.00 de 30000\.00, faltan 25500\.00/);
+    assert.match(text, /3000\.00 al mes = 1500\.00 por quincena/);
+});
+
+// Sin fecha, Metas!F trae TODO lo que falta: partirlo en quincenas diría
+// "aparta $34,588" y sería basura. Es el único caso que puede mentir feo.
+test('sin fecha objetivo no inventa una aportación por quincena', () => {
+    const text = formatGoals([goal('Fondo de emergencia', 69177, 0, '', 69177)]);
+
+    const line = text.split('\n').find((row) => row.startsWith('- Fondo'))!;
+
+    assert.match(line, /SIN fecha objetivo/);
+    assert.doesNotMatch(line, /por quincena|al mes/);
+});
+
+test('sin metas lo dice en vez de quedarse callado', () => {
+    assert.match(formatGoals([]), /no tiene ninguna registrada/);
 });

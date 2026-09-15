@@ -1,14 +1,17 @@
 import * as z from 'zod';
 import {
     clearCatalogCache,
+    createGoal,
     getCategories,
     getExpenseTypes,
+    getGoals,
     getIncomeSources,
     getIncomeTypes,
     getPaymentMethods,
 } from '../sheets/sheets.service.js';
 import { sendMessage } from '../telegram/telegram.service.js';
-import { recordAndConfirm, undoLast } from '../transactions/transactions.service.js';
+import { recordAndConfirm, recordSaving, undoLast } from '../transactions/transactions.service.js';
+import formatMoney from '../utils/formatMoney.js';
 
 type Answers = Record<string, string>;
 
@@ -16,6 +19,12 @@ type Step = {
     key: string;
     question: string;
     options?: () => Promise<string[]>;
+    /** Qué decir cuando `options()` viene vacío: el paso no se puede contestar. */
+    empty?: string;
+    /** Regresa el valor ya normalizado, o null para volver a preguntar. */
+    validate?: (value: string) => string | null;
+    /** Lo que se manda cuando `validate` dice que no. */
+    hint?: string;
 };
 
 type Flow = {
@@ -23,10 +32,81 @@ type Flow = {
     finish: (chatId: number, answers: Answers) => Promise<void>;
 };
 
-const AMOUNT_STEP: Step = { key: 'amount', question: '¿De cuánto? Solo el número, ej. 250.50' };
+const amountSchema = z.coerce.number().positive();
+const DATE_PATTERN = /^\d{2}\/\d{2}\/\d{4}$/;
+
+const parseAmount = (value: string) => {
+    const amount = amountSchema.safeParse(value.replace(/[$,\s]/g, ''));
+
+    return amount.success ? String(amount.data) : null;
+};
+
+const AMOUNT_STEP: Step = {
+    key: 'amount',
+    question: '¿De cuánto? Solo el número, ej. 250.50',
+    validate: parseAmount,
+    hint: 'Necesito un número mayor a 0, ej. 250.50',
+};
 const DESCRIPTION_STEP: Step = { key: 'description', question: '¿En qué fue? Descríbelo corto.' };
+const GOAL_STEP: Step = {
+    key: 'goal',
+    question: '¿Para qué meta?',
+    options: async () => (await getGoals()).map((goal) => goal.name),
+    empty: 'Todavía no tienes metas 🐷 Créala con /meta y luego apartamos.',
+};
 
 const flows: Record<string, Flow> = {
+    apartar: {
+        steps: [AMOUNT_STEP, GOAL_STEP],
+        finish: (chatId, answers) =>
+            recordSaving(chatId, { amount: Number(answers.amount), goalName: answers.goal }),
+    },
+    meta: {
+        steps: [
+            { key: 'name', question: '¿Cómo se llama la meta? Ej. Vacaciones' },
+            {
+                key: 'target',
+                question: '¿Cuánto quieres juntar? Solo el número.',
+                validate: parseAmount,
+                hint: 'Necesito un número mayor a 0, ej. 30000',
+            },
+            {
+                key: 'deadline',
+                // Sin fecha la hoja no calcula aportación mensual y el bot no te
+                // puede decir cuánto apartar por quincena. Por eso se insiste.
+                question: '¿Para cuándo? En dd/MM/yyyy, ej. 01/06/2027.\nEscribe "sin fecha" si aún no sabes (pero entonces no calculo cuánto apartar por quincena).',
+                validate: (value) => {
+                    const answer = value.trim();
+
+                    if (/^(sin fecha|ninguna|no|-)$/i.test(answer)) {
+                        return '';
+                    }
+
+                    return DATE_PATTERN.test(answer) ? answer : null;
+                },
+                hint: 'Así no la leo 🙈 Mándamela como dd/MM/yyyy, ej. 01/06/2027, o escribe "sin fecha".',
+            },
+        ],
+        finish: async (chatId, answers) => {
+            const goal = await createGoal({
+                name: answers.name,
+                target: Number(answers.target),
+                deadline: answers.deadline,
+            });
+
+            await sendMessage(
+                chatId,
+                [
+                    `🎯 Meta creada: ${goal.name}`,
+                    '',
+                    `Objetivo: ${formatMoney(goal.target)}`,
+                    goal.deadline
+                        ? `Fecha: ${goal.deadline} — en cuanto la hoja recalcule te digo cuánto va por quincena al registrar tu ingreso.`
+                        : 'Sin fecha objetivo: apartas lo que puedas con /apartar. Ponle fecha en Metas!D cuando la sepas.',
+                ].join('\n')
+            );
+        },
+    },
     gasto: {
         steps: [
             AMOUNT_STEP,
@@ -68,8 +148,6 @@ const flows: Record<string, Flow> = {
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const sessions = new Map<number, { flow: string; index: number; answers: Answers; updatedAt: number }>();
 
-const amountSchema = z.coerce.number().positive();
-
 const HELP = `Soy Finnip 🐷
 
 • Mándame un mensaje suelto: "gasté 250 en el súper" o "me pagaron 5000 de nómina".
@@ -77,6 +155,8 @@ const HELP = `Soy Finnip 🐷
 • Pregúntame lo que sea: "¿cuánto llevo gastado este mes?".
 • /consejo y te mando un consejo en audio con tus números.
 • /gasto o /ingreso para registrarlo paso a paso.
+• /meta para crear una meta de ahorro.
+• /apartar 1500 para mandar dinero de tu disponible a una meta.
 • /deshacer borra el último movimiento que registré.
 • /cancelar para salirte de un registro a medias.
 • /recargar si editaste los catálogos de la hoja.`;
@@ -148,32 +228,30 @@ export async function handleCommandFlow(chatId: number, text: string): Promise<b
     const step = flows[session.flow].steps[session.index];
     const answer = text.trim();
 
+    let value = answer;
+
     if (step.options) {
         const options = await step.options();
 
-        if (!options.includes(answer)) {
+        if (!options.includes(value)) {
             await sendMessage(chatId, `Esa no está en la lista 🙈 ${step.question}`, options);
             return true;
         }
-    } else if (step.key === 'amount') {
-        const amount = amountSchema.safeParse(answer.replace(/[$,\s]/g, ''));
+    } else if (step.validate) {
+        const normalized = step.validate(value);
 
-        if (!amount.success) {
-            await sendMessage(chatId, 'Necesito un número mayor a 0, ej. 250.50');
+        if (normalized === null) {
+            await sendMessage(chatId, step.hint ?? step.question);
             return true;
         }
 
-        session.answers[step.key] = String(amount.data);
-        session.index += 1;
-        session.updatedAt = Date.now();
-        await askOrFinish(chatId);
-        return true;
-    } else if (!answer) {
+        value = normalized;
+    } else if (!value) {
         await sendMessage(chatId, step.question);
         return true;
     }
 
-    session.answers[step.key] = answer;
+    session.answers[step.key] = value;
     session.index += 1;
     session.updatedAt = Date.now();
     await askOrFinish(chatId);
@@ -196,5 +274,14 @@ async function askOrFinish(chatId: number) {
         return;
     }
 
-    await sendMessage(chatId, step.question, await step.options?.());
+    const options = await step.options?.();
+
+    // Sin opciones el usuario quedaría atrapado: nada de lo que escriba pasa.
+    if (options?.length === 0) {
+        sessions.delete(chatId);
+        await sendMessage(chatId, step.empty ?? 'Esa lista está vacía en tu hoja 🤷');
+        return;
+    }
+
+    await sendMessage(chatId, step.question, options);
 }

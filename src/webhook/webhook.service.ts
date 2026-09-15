@@ -1,10 +1,11 @@
 import * as z from 'zod';
 import { answerFinancialQuestion, classifyMessage } from '../ai/ai.service.js';
-import { buildFinancialContext } from '../ai/ai.context.js';
+import { buildFinancialContext, formatGoals } from '../ai/ai.context.js';
 import {
     getCurrentBalance,
     getExpenses,
     getFinancialHealthData,
+    getGoals,
     getIncomes,
 } from '../sheets/sheets.service.js';
 import formatDate from '../utils/formatDate.js';
@@ -12,7 +13,7 @@ import { handleCommandFlow } from '../commands/commands.service.js';
 import { readReceipt } from '../ocr/ocr.service.js';
 import { downloadFile, keepTyping, sendMessage, sendVoice } from '../telegram/telegram.service.js';
 import { synthesize } from '../tts/tts.service.js';
-import { recordAndConfirm } from '../transactions/transactions.service.js';
+import { recordAndConfirm, recordSaving } from '../transactions/transactions.service.js';
 import { config } from '../config.js';
 import { toUserMessage, UserError } from '../utils/UserError.js';
 
@@ -53,11 +54,12 @@ const looksLikeQuestion = (text: string) => {
  * y el detalle de los movimientos registrados.
  */
 async function answerQuestion(question: string, spoken: boolean): Promise<string> {
-    const [balance, health, expenses, incomes] = await Promise.all([
+    const [balance, health, expenses, incomes, goals] = await Promise.all([
         getCurrentBalance(),
         getFinancialHealthData(),
         getExpenses(),
         getIncomes(),
+        getGoals(),
     ]);
 
     const detail = buildFinancialContext(expenses, incomes, formatDate(), balance);
@@ -66,7 +68,7 @@ async function answerQuestion(question: string, spoken: boolean): Promise<string
         console.log(`Contexto recortado: ${detail.omitted} gastos viejos fuera del detalle`);
     }
 
-    const context = [health, '', detail.text].join('\n');
+    const context = [health, '', formatGoals(goals), '', detail.text].join('\n');
 
     return answerFinancialQuestion(question, context, spoken);
 }
@@ -132,9 +134,9 @@ export const handleTelegramUpdate = async (update: unknown) => {
             const description = await readReceipt(image);
             const receipt = await classifyMessage(description);
 
-            // Un ticket es un movimiento, nunca una pregunta: si la IA dice otra
-            // cosa es que no entendió la foto.
-            if (receipt.type === 'pregunta') {
+            // Un ticket es un gasto o un ingreso, nunca una pregunta ni un
+            // apartado: si la IA dice otra cosa es que no entendió la foto.
+            if (receipt.type === 'pregunta' || receipt.type === 'ahorro') {
                 throw new UserError(`No le entendí a ese ticket 🧾 Leí: "${description}"`);
             }
 
@@ -174,6 +176,15 @@ export const handleTelegramUpdate = async (update: unknown) => {
             }
 
             await reply(chat.id, await answerQuestion(content, spoken), spoken);
+            return;
+        }
+
+        if (result.type === 'ahorro') {
+            await recordSaving(chat.id, {
+                amount: result.amount,
+                goalName: result.goal,
+                date: result.date,
+            });
             return;
         }
 
