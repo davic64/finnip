@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -52,6 +53,28 @@ def call_bridge(method, path, body=None):
         raise RuntimeError("No se pudo conectar con Home Bridge") from error
 
 
+def normalize(text):
+    text = unicodedata.normalize("NFKD", text.casefold())
+    return " ".join("".join(c for c in text if not unicodedata.combining(c)).split())
+
+
+def resolve_device(device):
+    """Accept an entity_id or a device name, so the model can act without a prior list call."""
+    if ENTITY_ID.match(device):
+        return device
+    query = normalize(device)
+    devices = call_bridge("GET", "/devices").get("devices", [])
+    names = {d["id"]: normalize(d.get("name", "")) for d in devices}
+    exact = [id_ for id_, name in names.items() if name == query]
+    partial = [id_ for id_, name in names.items() if name and (query in name or name in query)]
+    matches = exact or partial
+    if len(matches) == 1:
+        return matches[0]
+    available = ", ".join(d.get("name", d["id"]) for d in devices) or "ninguno"
+    problem = "es ambiguo" if matches else "no coincide con ningún dispositivo"
+    raise ValueError(f"'{device}' {problem}. Disponibles: {available}")
+
+
 def run(params):
     action = params.get("action")
     if action not in ACTIONS:
@@ -60,8 +83,9 @@ def run(params):
         return call_bridge("GET", "/devices")
 
     device = params.get("device")
-    if not isinstance(device, str) or not ENTITY_ID.match(device):
-        raise ValueError("Dispositivo inválido: usa un id devuelto por la acción list")
+    if not isinstance(device, str) or not device.strip():
+        raise ValueError("Falta el dispositivo: usa su nombre o su id")
+    device = resolve_device(device)
     if action == "status":
         return call_bridge("GET", f"/devices/{device}")
 
@@ -74,8 +98,9 @@ SCHEMA = {
     "description": (
         "Controla los dispositivos del hogar que el usuario expuso a Finnip "
         "(luces, interruptores, persianas y climatización). "
-        "Usa action=list para descubrir los dispositivos, su id y sus capabilities. "
-        "Solo ejecuta acciones incluidas en las capabilities del dispositivo. "
+        "Para actuar pasa directamente el nombre del dispositivo en device (por ejemplo 'lámpara'); "
+        "no necesitas llamar list antes. Usa list solo para descubrir dispositivos o sus capabilities. "
+        "Si el nombre no coincide o es ambiguo, el error incluye los dispositivos disponibles. "
         "Cada orden devuelve confirmed y actual con el estado que reporta Home Assistant."
     ),
     "parameters": {
@@ -88,7 +113,7 @@ SCHEMA = {
             },
             "device": {
                 "type": "string",
-                "description": "id del dispositivo devuelto por list, por ejemplo light.leds_monitores",
+                "description": "Nombre del dispositivo (por ejemplo 'lámpara') o su id (por ejemplo light.leds_monitores)",
             },
             "rgb": {
                 "type": "array",
