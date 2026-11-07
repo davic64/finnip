@@ -1,0 +1,36 @@
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: finnip-brain
+    restart: unless-stopped
+    volumes:
+      - ../data/hermes:/opt/data
+    command: gateway run
+    env_file:
+        - ../config/hermes-bridge.env
+    environment:
+      FINNIP_BRIDGE_URL: http://home-bridge:3000
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: finnip-homeassistant
+    restart: unless-stopped
+    network_mode: host
+    privileged: false
+    environment:
+      TZ: America/Mexico_City
+    volumes:
+      - ../data/homeassistant:/config
+      - /run/dbus:/run/dbus:ro
+
+  home-bridge:
+    build:
+      context: ../apps/home-bridge
+    container_name: finnip-home-bridge
+    restart: unless-stopped
+    env_file:
+      - ../config/homeassistant.env
+    environment:
+      HA_URL: http://host.docker.internal:8123
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
