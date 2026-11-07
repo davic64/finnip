@@ -7,6 +7,7 @@ Telegram y controla dispositivos del hogar mediante Home Assistant.
 
 ```
 Telegram → Hermes Agent (finnip-brain)
+             ├─ plugin finnip_voice ──HTTPS + Bearer──► Fish Audio (respuestas habladas)
              └─ plugin finnip_lights ──HTTP + Bearer──► Home Bridge (finnip-home-bridge)
                                                           └─ REST ──► Home Assistant (finnip-homeassistant)
                                                                         └─ Bluetooth ──► light.leds_monitores
@@ -14,7 +15,7 @@ Telegram → Hermes Agent (finnip-brain)
 
 | Servicio | Contenedor | Función |
 |---|---|---|
-| `hermes` | `finnip-brain` | Agente de IA conectado a Telegram. Carga el plugin `finnip_lights`. |
+| `hermes` | `finnip-brain` | Agente de IA conectado a Telegram. Carga los plugins `finnip_lights` y `finnip_voice`. |
 | `home-bridge` | `finnip-home-bridge` | API TypeScript (Fastify + Zod). Único punto de acceso de Hermes a Home Assistant. |
 | `homeassistant` | `finnip-homeassistant` | Domótica. Red del host y D-Bus para Bluetooth (integración `elkbledom`). |
 
@@ -27,6 +28,7 @@ cerrada de operaciones expuestas por Home Bridge.
 apps/
   home-bridge/     API TypeScript, pruebas Vitest y Dockerfile (ver su README)
   finnip-lights/   Plugin Python de Hermes: herramienta finnip_lights
+  finnip-voice/    Plugin Python de Hermes: proveedor TTS fish (Fish Audio)
 compose/
   compose.yaml     Definición de los tres servicios
 config/            Variables de entorno con secretos (no versionado)
@@ -40,6 +42,7 @@ Crear con permisos `600`:
 
 - `config/homeassistant.env`: `HA_TOKEN` y `BRIDGE_API_KEY` (mínimo 32 caracteres).
 - `config/hermes-bridge.env`: `BRIDGE_API_KEY`, con el mismo valor.
+- `data/hermes/.env`: `FISH_API_KEY` de Fish Audio, para la voz de Finnip.
 
 `HA_URL` y `FINNIP_BRIDGE_URL` se definen en `compose/compose.yaml`.
 
@@ -56,12 +59,42 @@ sudo docker compose logs --tail=50 <servicio>
 Las variables de entorno se leen al crear el contenedor: tras cambiar un
 `.env`, recrear el servicio con `--force-recreate`; `restart` no basta.
 
-Para actualizar el plugin:
+Para actualizar los plugins:
 
 ```sh
 sudo cp apps/finnip-lights/*.py apps/finnip-lights/plugin.yaml data/hermes/plugins/finnip-lights/
+sudo cp apps/finnip-voice/*.py apps/finnip-voice/plugin.yaml data/hermes/plugins/finnip-voice/
 sudo docker compose restart hermes
 ```
+
+## Voz
+
+Finnip transcribe las notas de voz con el STT local de Hermes y contesta con
+voz mediante el plugin `finnip-voice`, que registra el proveedor TTS `fish`
+(Fish Audio, modelo `s2.1-pro-free`, voz `ae74d1059517440aa6e5d2d50598d179`).
+El audio llega como nota de voz Ogg/Opus, siempre después de la respuesta en
+texto; si Fish Audio falla, solo llega el texto.
+
+En `data/hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - finnip-lights
+    - finnip-voice
+tts:
+  provider: fish
+  output_format: opus
+  # voice: <reference_id>   # opcional, otra voz de Fish Audio
+  # model: s2.1-pro         # opcional, modelo de pago
+voice:
+  auto_tts: true            # responde con voz a las notas de voz
+stt:
+  language: "es"
+```
+
+Por chat de Telegram: `/voice on` (voz solo ante notas de voz), `/voice tts`
+(voz en todas las respuestas) y `/voice off` (solo texto).
 
 ## Dispositivos
 
