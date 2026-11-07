@@ -71,8 +71,10 @@ dispositivo basta con etiquetarlo en Home Assistant: no hay que cambiar código
 ni desplegar. Sus acciones se deducen de los atributos que reporta Home
 Assistant (color, brillo, posición, temperatura, modos).
 
-La herramienta `finnip_lights` usa `action=list` para descubrir dispositivos y
-después actúa con su `entity_id` como `device`.
+La herramienta `finnip_lights` acepta en `device` el nombre del dispositivo
+(sin importar mayúsculas ni acentos) o su `entity_id`, así que actúa sin llamar
+antes a `action=list`. Si el nombre no coincide o es ambiguo, el error incluye
+los dispositivos disponibles.
 
 ## Home Bridge
 
