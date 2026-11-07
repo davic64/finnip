@@ -74,6 +74,11 @@ Rutas autenticadas con `Authorization: Bearer <BRIDGE_API_KEY>`:
 | `POST` | `/lights/monitores/on` | Encender y confirmar estado |
 | `POST` | `/lights/monitores/off` | Apagar y confirmar estado |
 | `POST` | `/lights/monitores/color` | `{ "rgb": [r, g, b], "brightness": 1-100 }` |
+| `GET` | `/devices/:id` | Estado de un dispositivo del catálogo |
+| `POST` | `/devices/:id/on` · `/off` · `/color` | Igual que las rutas de `/lights/monitores` |
+
+Los dispositivos se declaran en `apps/home-bridge/src/devices.ts`; las rutas
+`/lights/monitores` equivalen a `/devices/monitorLeds`.
 
 Las órdenes devuelven `confirmed` y `actual` con el estado que reporta Home
 Assistant después de ejecutarlas. La imagen Docker solo se construye si pasan

@@ -125,14 +125,14 @@ describe("upstream failures", () => {
         if (failure === "json") fetchMock.mockResolvedValueOnce(new Response("invalid json"));
         const response = await app.inject({ method: "GET", url: "/lights/monitores", headers });
         expect(response.statusCode).toBe(502);
-        expect(response.json()).toEqual({ error: "Unable to get light state" });
+        expect(response.json()).toEqual({ error: "Unable to get device state" });
     });
     it.each(["color", "on", "off"])("handles failed %s commands", async (action) => {
         fetchMock.mockResolvedValueOnce(json({}, 503));
         const response = await app.inject({ method: "POST", url: `/lights/monitores/${action}`, headers,
             ...(action === "color" ? { payload: { rgb: [135, 206, 235] } } : {}) });
         expect(response.statusCode).toBe(502);
-        expect(response.json().error).toBe(action === "color" ? "Unable to communicate with Home Assistant" : `Unable to turn ${action} lights`);
+        expect(response.json().error).toBe(action === "color" ? "Unable to communicate with Home Assistant" : `Unable to turn ${action} device`);
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
     it("does not confirm a command if the subsequent state read fails", async () => {
@@ -145,7 +145,7 @@ describe("upstream failures", () => {
         fetchMock.mockResolvedValueOnce(json([])).mockResolvedValueOnce(json({}, 503));
         const response = await app.inject({ method: "POST", url: `/lights/monitores/${action}`, headers });
         expect(response.statusCode).toBe(502);
-        expect(response.json()).toEqual({ error: `Unable to turn ${action} lights` });
+        expect(response.json()).toEqual({ error: `Unable to turn ${action} device` });
     });
 });
 
