@@ -96,6 +96,27 @@ stt:
 Por chat de Telegram: `/voice on` (voz solo ante notas de voz), `/voice tts`
 (voz en todas las respuestas) y `/voice off` (solo texto).
 
+### Transcripción local (STT)
+
+La imagen de Hermes no incluye `faster-whisper`. Se habilita una vez con el
+gestor de dependencias de Hermes, que guarda el entorno en el volumen
+(`data/hermes/installs/`), así que sobrevive a reinicios y recreaciones:
+
+```sh
+sudo docker exec -u 10000 finnip-brain hermes pm install --extra stt-whisper
+cd compose && sudo docker compose restart hermes
+```
+
+Verificar que sigue habilitado (por ejemplo, tras actualizar Hermes):
+
+```sh
+sudo docker exec -u 10000 finnip-brain hermes pm status | grep -c stt-whisper   # 1 = habilitado
+```
+
+Si devuelve `0` o el log muestra `No STT provider available`, repetir la
+instalación. El modelo `base` (~150 MB) se descarga en el volumen con la
+primera nota de voz.
+
 ## Dispositivos
 
 Finnip solo ve las entidades de Home Assistant con la etiqueta `finnip` y de un
