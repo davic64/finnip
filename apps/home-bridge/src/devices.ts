@@ -1,20 +1,107 @@
-export type DeviceType = "light" | "switch";
+import type { ActionName } from "./actions.js";
 
-export interface Device {
-    entityId: string;
-    type: DeviceType;
-    name: string;
+// Home Assistant label that opts an entity into Finnip. Untagged entities stay invisible.
+export const DEVICE_LABEL = "finnip";
+
+// Domains Finnip may control. A labeled entity outside this list (lock, alarm…) is ignored.
+export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate"] as const;
+export type Domain = (typeof ALLOWED_DOMAINS)[number];
+
+export interface Entity {
+    entity_id: string;
+    state: string;
+    attributes: Record<string, unknown>;
 }
 
-export type DeviceCatalog = Record<string, Device>;
+export interface Device {
+    id: string;
+    name: string;
+    domain: Domain;
+    state: string;
+    capabilities: ActionName[];
+    brightness?: number | null;
+    rgb_color?: number[] | null;
+    current_position?: number | null;
+    current_temperature?: number | null;
+    temperature?: number | null;
+    min_temp?: number | null;
+    max_temp?: number | null;
+    hvac_modes?: string[];
+}
 
-// Add new devices here. The key is the id used in the URL: /devices/<key>.
-// `type` must match the entity_id domain (light.*, switch.*).
-export const DEVICES = {
-    monitorLeds: { entityId: "light.leds_monitores", type: "light", name: "Leds Monitores" },
-} as const satisfies DeviceCatalog;
+const ENTITY_ID = /^([a-z_]+)\.[a-z0-9_]+$/;
 
-// Object.hasOwn keeps inherited keys such as "toString" or "__proto__" out.
-export function findDevice(catalog: DeviceCatalog, id: string): Device | undefined {
-    return Object.hasOwn(catalog, id) ? catalog[id] : undefined;
+// Also guards URL building: only well-formed ids of allowed domains get through.
+export function domainOf(entityId: string): Domain | undefined {
+    const domain = ENTITY_ID.exec(entityId)?.[1];
+    return ALLOWED_DOMAINS.find((allowed) => allowed === domain);
+}
+
+const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
+const strings = (value: unknown) =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const numbers = (value: unknown) =>
+    Array.isArray(value) && value.every((item) => typeof item === "number") ? value as number[] : null;
+
+// Color modes that accept rgb_color; HA converts between them.
+const COLOR_MODES = new Set(["hs", "rgb", "rgbw", "rgbww", "xy"]);
+// Bits from HA's CoverEntityFeature and ClimateEntityFeature.
+const COVER_FEATURES = [[1, "open"], [2, "close"], [4, "position"], [8, "stop"]] as const;
+const CLIMATE_TARGET_TEMPERATURE = 1;
+
+function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): ActionName[] {
+    const features = num(attributes.supported_features) ?? 0;
+    switch (domain) {
+        case "switch":
+            return ["on", "off"];
+        case "light": {
+            const modes = strings(attributes.supported_color_modes);
+            const capabilities: ActionName[] = ["on", "off"];
+            if (modes.some((mode) => mode !== "onoff")) capabilities.push("brightness");
+            if (modes.some((mode) => COLOR_MODES.has(mode))) capabilities.push("color");
+            return capabilities;
+        }
+        case "cover":
+            return COVER_FEATURES.filter(([bit]) => features & bit).map(([, name]) => name);
+        case "climate": {
+            const capabilities: ActionName[] = [];
+            if (features & CLIMATE_TARGET_TEMPERATURE) capabilities.push("temperature");
+            if (strings(attributes.hvac_modes).length > 0) capabilities.push("hvac_mode");
+            return capabilities;
+        }
+    }
+}
+
+export function toDevice(entity: Entity, domain: Domain): Device {
+    const attributes = entity.attributes;
+    const base: Device = {
+        id: entity.entity_id,
+        name: typeof attributes.friendly_name === "string" ? attributes.friendly_name : entity.entity_id,
+        domain,
+        state: entity.state,
+        capabilities: capabilitiesOf(domain, attributes),
+    };
+    switch (domain) {
+        case "switch":
+            return base;
+        case "light": {
+            const rawBrightness = num(attributes.brightness);
+            return {
+                ...base,
+                brightness: rawBrightness === null ? null : Math.round(rawBrightness / 255 * 100),
+                rgb_color: numbers(attributes.rgb_color),
+            };
+        }
+        case "cover":
+            return { ...base, current_position: num(attributes.current_position) };
+        case "climate":
+            return {
+                ...base,
+                current_temperature: num(attributes.current_temperature),
+                temperature: num(attributes.temperature),
+                min_temp: num(attributes.min_temp),
+                max_temp: num(attributes.max_temp),
+                hvac_modes: strings(attributes.hvac_modes),
+            };
+    }
 }
