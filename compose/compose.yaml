@@ -17,6 +17,9 @@ services:
     restart: unless-stopped
     network_mode: host
     privileged: false
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     environment:
       TZ: America/Mexico_City
     volumes:

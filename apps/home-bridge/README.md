@@ -1,14 +1,15 @@
 # Finnip Home Bridge
 
-API limitada a los LEDs de monitores, con autenticación mediante Bearer token.
+API limitada a los dispositivos del catálogo, con autenticación mediante Bearer token.
 
 ## Estructura
 
 - `src/index.ts`: arranque y escucha HTTP.
 - `src/app.ts`: construcción de Fastify y conexión de dependencias.
+- `src/devices.ts`: catálogo de dispositivos expuestos.
 - `src/routes/`: métodos y rutas HTTP.
 - `src/controllers/`: validación de entradas y respuestas HTTP.
-- `src/services/`: cliente Home Assistant y operaciones de luces.
+- `src/services/`: cliente Home Assistant y operaciones de dispositivos.
 - `src/schemas/`: contratos Zod y tipos derivados.
 - `src/hooks/`: autenticación.
 - `src/utils/`: comparación de colores RGB normalizados.
@@ -31,11 +32,34 @@ npm run build
 comprueba tipos y ejecuta pruebas antes de compilar; la imagen final contiene
 solo las dependencias de producción y el código compilado.
 
+## Catálogo de dispositivos
+
+Solo se controlan los dispositivos declarados en `src/devices.ts`. Para agregar
+uno, añade una entrada con su `entity_id` real de Home Assistant:
+
+```ts
+deskLamp: { entityId: "light.lampara_escritorio", type: "light", name: "Lámpara" },
+```
+
+La clave (`deskLamp`) es el id de la URL. `type` debe coincidir con el dominio
+del `entity_id` (`light` o `switch`); una prueba lo comprueba.
+
+| Método | Ruta | Tipos |
+|---|---|---|
+| `GET` | `/devices/:id` | todos |
+| `POST` | `/devices/:id/on` | todos |
+| `POST` | `/devices/:id/off` | todos |
+| `POST` | `/devices/:id/color` | `light` |
+
+Un id fuera del catálogo responde `404`; `color` en un dispositivo que no es
+`light` responde `400`. Los `switch` devuelven solo `name` y `state`.
+
 ## Comportamiento
 
-`GET /health` es público. Las rutas `/lights/monitores`,
-`/lights/monitores/color`, `/lights/monitores/on` y `/lights/monitores/off`
-requieren autenticación. Se mantienen sus contratos HTTP anteriores.
+`GET /health` es público; el resto requiere autenticación. Las rutas
+`/lights/monitores`, `/lights/monitores/color`, `/lights/monitores/on` y
+`/lights/monitores/off` se mantienen para el plugin `finnip_lights` y equivalen
+a `/devices/monitorLeds`.
 
 La confirmación de color comprueba encendido, brillo en porcentaje y RGB
 proporcional, con tolerancia de un paso por canal al normalizar a 255. Conserva

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-export const lightSchema = z.object({
-    entity_id: z.literal("light.leds_monitores"),
+export const stateSchema = z.object({
+    entity_id: z.string(),
     state: z.string(),
     attributes: z.object({
         brightness: z.number().nullable().optional(),
