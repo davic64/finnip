@@ -57,8 +57,11 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Check Python syntax
         run: |
           python -m py_compile apps/finnip-lights/__init__.py
+
+      - name: Run plugin tests
+        run: python -m unittest discover -s apps/finnip-lights/tests -v

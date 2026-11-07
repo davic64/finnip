@@ -1,46 +1,54 @@
-import type { Device } from "../devices.js";
+import { z } from "zod";
+import type { Entity } from "../devices.js";
 import type { BridgeEnv } from "../schemas/env.js";
-import { stateSchema } from "../schemas/devices.js";
 
-export interface DeviceState {
-    name: string;
-    state: string;
-    // Only lights report these.
-    brightness?: number | null;
-    rgb_color?: number[] | null;
-}
+const entitySchema = z.object({
+    entity_id: z.string(),
+    state: z.string(),
+    attributes: z.record(z.string(), z.unknown()),
+});
 
 export function createHomeAssistantService(env: BridgeEnv, fetchImpl: typeof fetch = fetch) {
-    async function callService(device: Device, service: "turn_on" | "turn_off", data: Record<string, unknown> = {}) {
-        const response = await fetchImpl(`${env.HA_URL}/api/services/${device.type}/${service}`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${env.HA_TOKEN}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ entity_id: device.entityId, ...data }),
+    async function request(path: string, init: { method?: string; body?: unknown } = {}) {
+        const response = await fetchImpl(`${env.HA_URL}${path}`, {
+            method: init.method ?? "GET",
+            headers: {
+                Authorization: `Bearer ${env.HA_TOKEN}`,
+                ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+            },
+            body: init.body === undefined ? undefined : JSON.stringify(init.body),
             signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) throw new Error(`Home Assistant returned HTTP ${response.status}`);
+        return response;
     }
 
-    async function getState(device: Device): Promise<DeviceState> {
-        const response = await fetchImpl(`${env.HA_URL}/api/states/${device.entityId}`, {
-            headers: { Authorization: `Bearer ${env.HA_TOKEN}` },
-            signal: AbortSignal.timeout(5000),
-        });
-        if (!response.ok) throw new Error(`Home Assistant returned HTTP ${response.status}`);
-        const parsed = stateSchema.safeParse(await response.json());
-        if (!parsed.success || parsed.data.entity_id !== device.entityId) {
-            throw new Error("Invalid Home Assistant state");
-        }
-        const base = { name: device.name, state: parsed.data.state };
-        if (device.type !== "light") return base;
-        const rawBrightness = parsed.data.attributes.brightness;
-        return {
-            ...base,
-            brightness: rawBrightness == null ? null : Math.round(rawBrightness / 255 * 100),
-            rgb_color: parsed.data.attributes.rgb_color ?? null,
-        };
+    function parse<T>(schema: z.ZodType<T>, value: unknown): T {
+        const parsed = schema.safeParse(value);
+        if (!parsed.success) throw new Error("Invalid Home Assistant response");
+        return parsed.data;
     }
 
-    return { callService, getState };
+    return {
+        // The template API is the REST way to read labels; /api/states does not include them.
+        async labeledEntityIds(label: string): Promise<string[]> {
+            const response = await request("/api/template", {
+                method: "POST",
+                body: { template: `{{ label_entities('${label}') | tojson }}` },
+            });
+            return parse(z.array(z.string()), JSON.parse(await response.text()));
+        },
+        async getStates(): Promise<Entity[]> {
+            return parse(z.array(entitySchema), await (await request("/api/states")).json());
+        },
+        async getState(entityId: string): Promise<Entity> {
+            const entity = parse(entitySchema, await (await request(`/api/states/${entityId}`)).json());
+            if (entity.entity_id !== entityId) throw new Error("Home Assistant returned another entity");
+            return entity;
+        },
+        async callService(domain: string, service: string, data: Record<string, unknown>) {
+            await request(`/api/services/${domain}/${service}`, { method: "POST", body: data });
+        },
+    };
 }
 export type HomeAssistantService = ReturnType<typeof createHomeAssistantService>;

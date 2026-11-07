@@ -63,6 +63,17 @@ sudo cp apps/finnip-lights/*.py apps/finnip-lights/plugin.yaml data/hermes/plugi
 sudo docker compose restart hermes
 ```
 
+## Dispositivos
+
+Finnip solo ve las entidades de Home Assistant con la etiqueta `finnip` y de un
+dominio permitido (`light`, `switch`, `cover`, `climate`). Para agregar un
+dispositivo basta con etiquetarlo en Home Assistant: no hay que cambiar código
+ni desplegar. Sus acciones se deducen de los atributos que reporta Home
+Assistant (color, brillo, posición, temperatura, modos).
+
+La herramienta `finnip_lights` usa `action=list` para descubrir dispositivos y
+después actúa con su `entity_id` como `device`.
+
 ## Home Bridge
 
 Rutas autenticadas con `Authorization: Bearer <BRIDGE_API_KEY>`:
@@ -70,16 +81,11 @@ Rutas autenticadas con `Authorization: Bearer <BRIDGE_API_KEY>`:
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET` | `/health` | Estado del servicio (público) |
-| `GET` | `/lights/monitores` | Estado, brillo en % y RGB |
-| `POST` | `/lights/monitores/on` | Encender y confirmar estado |
-| `POST` | `/lights/monitores/off` | Apagar y confirmar estado |
-| `POST` | `/lights/monitores/color` | `{ "rgb": [r, g, b], "brightness": 1-100 }` |
-| `GET` | `/devices/:id` | Estado de un dispositivo del catálogo |
-| `POST` | `/devices/:id/on` · `/off` · `/color` | Igual que las rutas de `/lights/monitores` |
+| `GET` | `/devices` | Dispositivos expuestos y sus `capabilities` |
+| `GET` | `/devices/:id` | Estado de un dispositivo |
+| `POST` | `/devices/:id/:action` | Ejecuta una capability y confirma el estado |
 
-Los dispositivos se declaran en `apps/home-bridge/src/devices.ts`; las rutas
-`/lights/monitores` equivalen a `/devices/monitorLeds`.
-
-Las órdenes devuelven `confirmed` y `actual` con el estado que reporta Home
-Assistant después de ejecutarlas. La imagen Docker solo se construye si pasan
-la comprobación de tipos y las pruebas.
+Detalle de acciones y cuerpos en `apps/home-bridge/README.md`. Las órdenes
+devuelven `confirmed` y `actual` con el estado que reporta Home Assistant después
+de ejecutarlas. La imagen Docker solo se construye si pasan la comprobación de
+tipos y las pruebas.
