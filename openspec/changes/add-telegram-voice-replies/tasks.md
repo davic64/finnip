@@ -15,8 +15,8 @@
 
 ## 3. Despliegue (requiere aprobación explícita)
 
-- [ ] 3.1 Respaldar `data/hermes/config.yaml`, copiar el plugin a `data/hermes/plugins/finnip-voice/` y verificar con `diff` que coincide con `apps/finnip-voice/`
-- [ ] 3.2 Agregar `finnip-voice` a `plugins.enabled` y fijar `tts.provider: fish`, `tts.output_format: opus` y `voice.auto_tts: true`; validar el YAML con `ruamel.yaml` en el contenedor y reiniciar `hermes`, verificando en `gateway.log` que el gateway arranca sin errores del plugin
+- [x] 3.1 Respaldar `data/hermes/config.yaml`, copiar el plugin a `data/hermes/plugins/finnip-voice/` y verificar con `diff` que coincide con `apps/finnip-voice/`
+- [x] 3.2 Agregar `finnip-voice` a `plugins.enabled` y fijar `tts.provider: fish`, `tts.output_format: opus` y `voice.auto_tts: true`; validar el YAML con `ruamel.yaml` en el contenedor y reiniciar `hermes`, verificando en `gateway.log` que el gateway arranca sin errores del plugin
 
 ## 4. Verificación de integración en Telegram
 
