@@ -35,12 +35,12 @@ def call_bridge(action, rgb=None, brightness=None):
         url=f"{BRIDGE_URL}{path}",
         data=payload,
         method=method,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}"},
     )
 
+    # Fastify rejects an empty body declared as JSON (FST_ERR_CTP_EMPTY_JSON_BODY).
+    if payload is not None:
+        request.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
