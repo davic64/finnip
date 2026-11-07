@@ -10,7 +10,7 @@
 - [x] 2.2 Implementar `synthesize`: lee `FISH_API_KEY` por llamada, usa los defaults de voz y modelo salvo kwargs, pide `opus` (escrito como `.ogg`) para `ogg`/`opus` o salida `.ogg` y `mp3` en otro caso, sin enviar `language`; `voice_compatible` devuelve `True`. Verificar con los tests de 2.4
 - [x] 2.3 Implementar el manejo de errores: falla sin llamar a la red si falta la key, convierte los errores HTTP y de red en mensajes cortos sin la key ni los encabezados, y trata la respuesta vacía como error sin escribir archivo. Verificar con los tests de 2.4
 - [x] 2.4 Escribir `apps/finnip-voice/tests/test_plugin.py` (`unittest`, stub de `agent.tts_provider` y `urlopen` simulado) que cubra la URL, los encabezados, el cuerpo, la voz y el modelo por defecto y configurados, la selección opus/mp3, la key faltante, el saneamiento de errores HTTP y de red y la respuesta vacía; verificar que `python -m unittest discover -s apps/finnip-voice/tests -v` pasa
-- [ ] 2.5 Agregar el job `finnip-voice` a `.github/workflows/ci.yml` (Python 3.13, `py_compile` y `unittest`) y verificar que pasa en el PR
+- [x] 2.5 Agregar el job `finnip-voice` a `.github/workflows/ci.yml` (Python 3.13, `py_compile` y `unittest`) y verificar que pasa en el PR
 - [x] 2.6 Documentar en `README.md` el plugin, la variable `FISH_API_KEY`, las claves `tts`/`voice`, los comandos `/voice on|tts|off` y el procedimiento de despliegue, y verificar que los comandos documentados coinciden con los del Migration Plan
 
 ## 3. Despliegue (requiere aprobación explícita)
