@@ -65,3 +65,23 @@ jobs:
 
       - name: Run plugin tests
         run: python -m unittest discover -s apps/finnip-lights/tests -v
+
+  finnip-voice:
+    name: Voice Plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile apps/finnip-voice/__init__.py
+
+      - name: Run plugin tests
+        run: python -m unittest discover -s apps/finnip-voice/tests -v
