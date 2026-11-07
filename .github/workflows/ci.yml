@@ -1,0 +1,64 @@
+
+name: Finnip CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  home-bridge:
+    name: TypeScript API
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/home-bridge
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/home-bridge/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check TypeScript
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Compile application
+        run: npm run build
+
+      - name: Build Docker image
+        run: docker build -t finnip-home-bridge:ci .
+
+  finnip-lights:
+    name: Python Plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile apps/finnip-lights/__init__.py
