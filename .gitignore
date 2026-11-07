@@ -1,0 +1,25 @@
+# Secretos y configuración privada
+.env
+.env.*
+*.env
+config/
+
+# Datos persistentes
+data/
+backups/
+
+# Node.js / TypeScript
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Sistema y editor
+.DS_Store
+.idea/
