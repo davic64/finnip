@@ -146,6 +146,24 @@ class FastPathTest(unittest.TestCase):
             self.assertIsNone(result, message)
             self.assertEqual(posts, [], message)
 
+    def test_color_order(self):
+        sent = []
+
+        def urlopen(request, timeout):
+            sent.append(request)
+            return FakeResponse(json.dumps(HOME if request.get_method() == "GET" else {"confirmed": True}).encode())
+
+        with mock.patch.object(plugin.urllib.request, "urlopen", urlopen):
+            result = plugin.fast_path_hook(user_message="Pon los monitores en rojo.")
+        post = [r for r in sent if r.get_method() == "POST"]
+        self.assertEqual([r.full_url for r in post], [f"{plugin.BRIDGE_URL}/devices/light.leds_monitores/color"])
+        self.assertEqual(json.loads(post[0].data), {"rgb": [255, 0, 0]})
+        self.assertIn("YA se ejecutó", result["context"])
+        for message in ("cambia los monitores a azul", "ponme la lámpara de color verde"):
+            self.assertEqual(self.hook(message)[1][0].rsplit("/", 1)[1], "color", message)
+        for message in ("pon música", "pon los monitores en rojo en 5 minutos", "¿pongo los monitores en rojo?"):
+            self.assertEqual(self.hook(message), (None, []), message)
+
     def test_bridge_failure_hands_back_to_model(self):
         with mock.patch.object(plugin.urllib.request, "urlopen", side_effect=urllib.error.URLError("x")):
             result = plugin.fast_path_hook(user_message='"apaga las luces"')
