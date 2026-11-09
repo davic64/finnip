@@ -144,6 +144,16 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(ws.receive_json(), {"type": "done"})
         self.assertEqual(self.hermes.prompts, ["qué onda"])
 
+    def test_two_open_clients_hearing_the_same_phrase_send_it_once(self):
+        self.hermes.replies.append((["Bien."], False))
+        with self.client.websocket_connect("/ws", headers=USER) as mac, \
+                self.client.websocket_connect("/ws", headers=USER) as iphone:
+            self.say(mac, "hola finnip")
+            self.receive_until(mac, "done")
+            self.say(iphone, "hola finnip")
+            self.assertEqual(iphone.receive_json(), {"type": "done"})
+        self.assertEqual(self.hermes.prompts, ["hola finnip"])
+
     def test_aborted_utterance_is_dropped(self):
         with self.client.websocket_connect("/ws", headers=USER) as ws:
             ws.send_json({"type": "utterance_start"})

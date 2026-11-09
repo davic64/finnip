@@ -42,13 +42,14 @@ class TailscaleOnly(BaseHTTPMiddleware):
 class Session:
     """One client connection: buffers PCM, runs one reply turn at a time, handles interruptions."""
 
-    def __init__(self, ws, stt, hermes, tts):
+    def __init__(self, ws, stt, hermes, tts, recent=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
         self.listening = None     # task transcribing the last utterance
         self.partials = None      # task sending live transcripts while the user speaks
-        self.last_text, self.last_at = "", 0.0
+        # Shared by every connection: two open clients hearing the same phrase must not both send it.
+        self.recent = recent if recent is not None else {"text": "", "at": 0.0}
         self.sentences = []       # current reply, index == audio seq
         self.pending_heard = None
         self.lock = asyncio.Lock()
@@ -133,10 +134,10 @@ class Session:
             await self.send({"type": "resume"})
             return
         now = time.monotonic()
-        if transcript and transcript == self.last_text and now - self.last_at < DUPLICATE_WINDOW:
+        if transcript and transcript == self.recent["text"] and now - self.recent["at"] < DUPLICATE_WINDOW:
             await self.send({"type": "done"})  # same phrase again (duplicated client), Hermes would queue it
             return
-        self.last_text, self.last_at = transcript, now
+        self.recent.update(text=transcript, at=now)
         await self.stop_turn(data if barge_in else None)
         await self.send({"type": "transcript", "text": transcript})
         if not transcript:
@@ -193,12 +194,14 @@ def create_app(stt=None, hermes=None, tts=None):
         from .services import EdgeTts, HermesClient, WhisperStt
         stt, hermes, tts = WhisperStt(), HermesClient(), EdgeTts()
 
+    recent = {"text": "", "at": 0.0}
+
     async def ws_endpoint(ws):
         if not allowed_user(ws.headers):
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
             return
         await ws.accept()
-        await Session(ws, stt, hermes, tts).run()
+        await Session(ws, stt, hermes, tts, recent).run()
 
     async def health(request):
         return JSONResponse({"ok": True})
