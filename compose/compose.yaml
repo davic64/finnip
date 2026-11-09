@@ -10,6 +10,8 @@ services:
         - ../config/hermes-bridge.env
     environment:
       FINNIP_BRIDGE_URL: http://home-bridge:3000
+      # API server reachable inside the Compose network only (no published port); voice-gateway uses it.
+      API_SERVER_HOST: 0.0.0.0
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -37,3 +39,21 @@ services:
       HA_URL: http://host.docker.internal:8123
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  voice-gateway:
+    build:
+      context: ../apps/voice-gateway
+    container_name: finnip-voice-gateway
+    restart: unless-stopped
+    env_file:
+      - ../config/voice-gateway.env
+    environment:
+      HERMES_URL: http://hermes:8642
+    # Host loopback only: reached through `tailscale serve`, never directly from the LAN.
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      # The built PWA, mounted so a UI rebuild is live without restarting the container.
+      - ../apps/finnip-app/dist:/app/static:ro
+    depends_on:
+      - hermes

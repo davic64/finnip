@@ -34,6 +34,21 @@ La PWA SHALL ofrecer un modo de un solo mensaje: un toque abre el micrófono par
 - **AND** Finnip ejecuta la orden y responde por voz
 - **AND** una segunda frase dicha después no se captura
 
+### Requirement: Transcripción en vivo
+
+Mientras el usuario habla, la PWA SHALL mostrar el texto que se va transcribiendo y actualizarlo al menos cada segundo. Al terminar la frase SHALL reemplazarlo por la transcripción final.
+
+#### Scenario: Frase larga
+
+- **WHEN** el usuario dice una frase de 5 segundos
+- **THEN** antes de que termine de hablar ya aparece en pantalla parte de lo que dijo
+- **AND** al terminar, el texto queda como la transcripción final que recibe Finnip
+
+#### Scenario: Una frase, un mensaje
+
+- **WHEN** el usuario dice una frase una sola vez, aunque haya tocado el orbe varias veces mientras cargaba
+- **THEN** Finnip recibe esa frase una sola vez
+
 ### Requirement: Interrumpir a Finnip
 
 El usuario SHALL poder interrumpir a Finnip mientras habla, con un toque en cualquier modo o con la voz en modo conversación. Al interrumpirlo, Finnip SHALL callarse de inmediato y el turno en curso SHALL cancelarse en el servidor.

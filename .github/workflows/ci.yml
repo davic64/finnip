@@ -85,3 +85,41 @@ jobs:
 
       - name: Run plugin tests
         run: python -m unittest discover -s apps/finnip-voice/tests -v
+  voice-gateway:
+    name: Voice Gateway
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/voice-gateway
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install starlette==0.46.2 httpx==0.28.1
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: Build Docker image
+        run: docker build -t finnip-voice-gateway:ci .
+  finnip-app:
+    name: PWA
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/finnip-app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/finnip-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck and build
+        run: npm run build

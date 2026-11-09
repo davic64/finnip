@@ -30,7 +30,7 @@ El porqué está en proposal.md, y los requisitos en `specs/voice-interface/spec
 **Non-Goals:**
 
 - Palabra de activación.
-- STT con resultados parciales en streaming. Se transcribe cada frase completa al cerrarla el VAD.
+- Un modelo de STT con streaming nativo. Los parciales se obtienen retranscribiendo el audio acumulado (decisión 4).
 - Firmware del ESP32.
 
 ## Decisions
@@ -39,9 +39,9 @@ El porqué está en proposal.md, y los requisitos en `specs/voice-interface/spec
 
 Es un servicio nuevo (`apps/voice-gateway/`, Starlette + uvicorn) en su propio contenedor.
 
-- **Python en vez de TypeScript:** faster-whisper y edge-tts son bibliotecas de Python. En TypeScript haría falta un segundo proceso para STT y TTS.
+- **Python en vez de TypeScript:** el STT (Parakeet vía `onnx-asr`) y edge-tts son bibliotecas de Python. En TypeScript haría falta un segundo proceso para STT y TTS.
 - **Separado de Hermes en vez de un plugin de plataforma:** Hermes no está pensado para audio en tiempo real. Un servicio aparte se reinicia y se prueba sin tocar el agente, y el ESP32 se conecta al mismo punto.
-- **Costo:** un segundo modelo faster-whisper `base` en memoria (unos 150 MB). Es aceptable en el EliteBook.
+- **STT: NVIDIA Parakeet TDT v3** (multilingüe, int8 ONNX en CPU, licencia CC-BY-4.0). Medido el 2026-11-09 con notas de voz reales del usuario: calidad igual a Whisper large-v3-turbo y 0.4–0.6 s por frase corta, contra ~0.85 s con errores de Whisper `base`, ~2.6 s de `small` y ~16 s de `large-v3-turbo`. Ocupa ~1 GB de RAM y la imagen pesa ~1.6 GB.
 
 ### 2. Hermes vía `/v1/responses` con streaming y una conversación fija
 
@@ -49,11 +49,21 @@ Es un servicio nuevo (`apps/voice-gateway/`, Starlette + uvicorn) en su propio c
 
 - Hermes pasa a escuchar en la red de Compose con `API_SERVER_HOST=0.0.0.0`, sin publicar el puerto en el host. Solo los contenedores de `compose_default` lo alcanzan.
 - La clave `API_SERVER_KEY` vive en `config/voice-gateway.env` y nunca llega al cliente.
-- **A verificar en la tarea 1.2:** si una petición del API server puede marcarse como turno de voz, para usar la ruta `auxiliary.voice_chat`. Si no se puede, se usa el modelo principal.
+- **Modelo y razonamiento por petición (verificado en la tarea 1.2):** `/v1/responses` acepta `model`, `provider` y `model_options.reasoning` en cada petición, así que no hace falta la ruta `auxiliary.voice_chat`. `voice-gateway` envía `model_options: {"reasoning": {"enabled": false}}` y el modelo configurado en `VOICE_MODEL`, que por defecto es el modelo principal de Hermes.
+- **Tiempos medidos el 2026-11-09** (pregunta corta, ~19 000 tokens de contexto):
+
+  | Variante | Primer texto | Respuesta completa |
+  |---|---|---|
+  | Sonnet con razonamiento | 4.76 s | 5.53 s |
+  | Sonnet sin razonamiento | 2.22 s | 3.19 s |
+  | `claude-haiku-5-5` | ~1.6 s | 2.7–2.9 s |
+
+- **Eventos SSE relevantes:** `response.output_text.delta` (el texto), `response.completed` y `response.failed`. Se ignoran `reasoning_summary_*` y `output_item.*`.
+- **El atajo `finnip-lights` corre también por el API server** (verificado en la tarea 1.3): el bridge recibió el `POST` sin que el modelo llamara a la herramienta.
 
 ### 3. Respuesta frase por frase
 
-`voice-gateway` acumula el texto del stream y lo corta en frases (`.`, `?`, `!`, `:` o un máximo de unos 200 caracteres). Por cada frase:
+`voice-gateway` acumula el texto del stream y lo corta en frases (`.`, `?`, `!`, `:`, `;` o un máximo de unos 200 caracteres). El **primer** fragmento puede cortarse también en una coma si ya tiene 30 caracteres o más, para que el audio empiece antes de que termine la primera oración. Medido: el primer audio bajó de ~4.6 s a 3.1–3.7 s en una respuesta de una sola oración larga. Por cada frase:
 
 1. La sintetiza con Edge TTS (`es-MX-JorgeNeural`, MP3).
 2. Envía el audio al cliente en cuanto está listo, en orden.
@@ -62,8 +72,15 @@ La síntesis de la frase N+1 corre mientras suena la N. El cliente reproduce los
 
 ### 4. VAD en el cliente y STT por frase en el servidor
 
-- La PWA detecta voz con `@ricky0123/vad-web` (Silero en el navegador) y envía PCM16 mono de 16 kHz mientras hay voz.
-- Al detectar el final de la frase manda `utterance_end`, y el servidor transcribe ese bloque con faster-whisper (`language: es`, `vad_filter`, el mismo `initial_prompt` que Hermes).
+- La PWA detecta voz con `@ricky0123/vad-web` (Silero v5 en el navegador).
+- Al empezar la voz manda `utterance_start`, los ~300 ms previos (para no perder la primera sílaba) y luego cada frame PCM16 mono de 16 kHz **en vivo**, mientras el usuario habla.
+- **Transcripción en vivo:** mientras llega audio, el servidor retranscribe lo acumulado cada ~0.5 s (si hay al menos 0.5 s nuevos) y envía `partial`. La PWA lo muestra como texto que se va escribiendo.
+- Al detectar el final manda `utterance_end` y el servidor hace la transcripción final con Parakeet. Si el VAD descarta el segmento (ruido corto), la PWA manda `utterance_abort` y el servidor lo tira.
+- **Costo:** cada parcial retranscribe todo el audio acumulado, así que el CPU crece con frases largas. Para frases de voz normales (menos de 10 s) es aceptable en el EliteBook.
+- **Pausas a media frase:** el VAD da por terminada una frase tras 0.6 s de silencio. Si el usuario sigue hablando antes de que Finnip diga algo (dentro de 8 s), el servidor cancela la respuesta en curso y envía a Hermes las dos partes como un solo mensaje. Responde `transcript` con `"merged": true` y la PWA junta ambas en una sola burbuja. Una vez que Finnip empezó a hablar, una frase nueva es una interrupción (decisión 9), no una continuación.
+- **Transcripción final inmediata:** en cuanto el final del audio queda en silencio (~0.2 s), el servidor transcribe de inmediato. Si al llegar `utterance_end` todo lo posterior es silencio, ese texto es la transcripción final y no se repite el trabajo (de ~0.9 s a ~0.05 s, medido).
+- **Protección contra duplicados:** el servidor ignora una transcripción idéntica a la anterior si llega en menos de 5 s. Evita que Hermes encole repeticiones, como pasó en la primera prueba, cuando varios toques crearon varios detectores en la PWA.
+- **Permiso primero:** la PWA pide el micrófono en el mismo toque, antes de cargar el detector (~4 MB con gzip), y lo precarga al abrir la página.
 - **Por qué en el cliente:** solo sube audio con voz, y el ESP32 puede usar su propio VAD o un botón con el mismo protocolo.
 
 ### 5. Modos de micrófono
@@ -77,13 +94,22 @@ La síntesis de la frase N+1 corre mientras suena la N. El cliente reproduce los
 Es el mismo para la PWA y para el ESP32.
 
 **Del cliente al servidor:**
-- Mensajes JSON de control: `{"type":"hello","client":"pwa|esp32","version":1}`, `{"type":"utterance_end"}`, `{"type":"cancel"}` y `{"type":"interrupt","played_seq":n,"played_ms":m}`.
+- Mensajes JSON de control:
+  - `{"type":"hello","client":"pwa|esp32","version":1}`
+  - `{"type":"utterance_start"}` (opcional): reinicia el búfer y activa los parciales. Un cliente simple, como el ESP32, puede omitirlo y mandar el audio seguido de `utterance_end`.
+  - `{"type":"utterance_abort"}`: descarta el audio recibido desde `utterance_start`.
+  - `{"type":"utterance_end"}`; en una interrupción por voz lleva además `"barge_in":true,"played_seq":n,"played_ms":m`.
+  - `{"type":"cancel"}`
+  - `{"type":"interrupt","played_seq":n,"played_ms":m}`, para la interrupción con un toque.
 - Frames binarios con PCM16 LE mono de 16 kHz.
 
 **Del servidor al cliente:**
-- JSON `{"type":"transcript","text":...}`.
-- JSON `{"type":"reply_text","text":...}`, por frase.
+- JSON `{"type":"ready","version":1}`, como respuesta a `hello`.
+- JSON `{"type":"partial","text":...}`: transcripción provisional mientras el usuario habla.
+- JSON `{"type":"transcript","text":...,"merged":true?}`: la transcripción final. Si el texto viene vacío, era silencio. `merged` indica que incluye la frase anterior (continuación tras una pausa).
+- JSON `{"type":"reply_text","seq":n,"text":...}`, por frase.
 - Frames binarios con el audio de cada frase, precedidos de `{"type":"audio","seq":n,"format":"mp3"}`.
+- JSON `{"type":"resume"}`: la interrupción por voz era eco y el cliente debe reanudar el audio pausado.
 - JSON `{"type":"done"}` y `{"type":"error","message":...}`.
 
 `cancel` detiene el turno en curso: corta el stream de Hermes y la síntesis pendiente. `interrupt` hace lo mismo, e informa además hasta qué fragmento (`played_seq`) y cuántos milisegundos del último (`played_ms`) sonaron, para la decisión 9.
@@ -105,11 +131,17 @@ Es el mismo para la PWA y para el ESP32.
 - **Con un toque:** en cualquier modo, tocar el botón o la zona central mientras Finnip habla lo interrumpe. Es la forma garantizada.
 - **Con la voz (barge-in):** en modo conversación, si el VAD detecta voz del usuario mientras Finnip habla, se interrumpe. Se puede desactivar en ajustes ("Interrumpir con la voz"); por defecto está activo.
 
-**Al interrumpir:**
+**Al interrumpir con un toque:**
 1. La PWA detiene la reproducción y vacía la cola de audio de inmediato, sin esperar al servidor.
 2. La PWA envía `interrupt` con `played_seq` y `played_ms`.
-3. El servidor cancela el stream de Hermes (cierra la conexión SSE y, si aplica, `POST /v1/runs/{id}/stop`) y la síntesis pendiente.
-4. La nueva frase del usuario se procesa como un turno normal.
+3. El servidor cancela el stream de Hermes (cierra la conexión SSE) y la síntesis pendiente, y responde `done`.
+
+**Al interrumpir con la voz:**
+1. La PWA **pausa** la reproducción, sin vaciar la cola, y envía la frase del usuario con `utterance_end` marcado como `barge_in`.
+2. Si el servidor determina que era eco, responde `resume` y la PWA reanuda el audio. El turno de Finnip nunca se canceló.
+3. Si era voz del usuario, el servidor cancela el turno en curso, registra lo oído y procesa la frase nueva como un turno normal. La PWA vacía la cola al recibir el `transcript`.
+
+Se pausa en vez de cortar porque, si se cancelara de inmediato, un falso disparo por eco ya no podría deshacerse.
 
 **Evitar que Finnip se interrumpa a sí mismo (eco):**
 - **Cancelación de eco del navegador** (`echoCancellation`). Con audífonos el riesgo casi desaparece.
@@ -120,7 +152,10 @@ Es el mismo para la PWA y para el ESP32.
 **Lo que el usuario alcanzó a oír:**
 - El servidor guarda qué texto corresponde a cada `seq`. Con `played_seq` y `played_ms` arma lo oído: las frases completas reproducidas, más la frase cortada marcada como incompleta.
 - El siguiente turno a Hermes se envía con una nota antes del mensaje del usuario: `[El usuario interrumpió tu respuesta anterior; solo alcanzó a oír: "..."]`. Así Finnip no da por dicho lo que no se oyó.
-- La tarea 1.4 revisa si el API server permite reemplazar la respuesta guardada. Si lo permite, se usa eso en vez de la nota.
+- **Verificado en la tarea 1.4:**
+  - Al cerrar la conexión SSE, Hermes interrumpe al agente (deja de llamar al modelo) y guarda la respuesta como `incomplete`, pero con todo el texto generado hasta ese punto, no solo lo oído.
+  - El API no ofrece forma de reemplazar una respuesta guardada, así que se usa la nota en el siguiente turno.
+  - Para cancelar basta con cerrar el stream; `/v1/runs/{id}/stop` aplica solo a `/v1/runs`.
 
 ## Risks / Trade-offs
 
@@ -128,7 +163,7 @@ Es el mismo para la PWA y para el ESP32.
 - **Interrupción por ruido** (otra persona hablando, la tele): el umbral alto lo reduce. Si en algún lugar molesta, se apaga la interrupción por voz y queda el toque.
 - **Edge TTS no oficial:** si deja de funcionar, se cambia de proveedor en `voice-gateway` sin tocar el protocolo. Piper ya se midió en el servidor como alternativa local (2–3 s).
 - **iOS:** Safari suspende el audio y el micrófono de una PWA en segundo plano, así que la conversación solo funciona con la app en primer plano.
-- **Doble modelo Whisper:** son unos 150 MB más de RAM. Si molesta, Hermes podría volver a STT por API en Telegram.
+- **Dos motores de STT:** Hermes sigue con Whisper `base` para Telegram y `voice-gateway` usa Parakeet (~1 GB de RAM). Más adelante Telegram podría usar Parakeet también.
 - **Exponer el API server de Hermes a la red de Compose:** queda protegido por `API_SERVER_KEY` y sin puerto publicado en el host.
 
 ## Migration Plan
@@ -142,7 +177,6 @@ Es el mismo para la PWA y para el ESP32.
 
 ## Open Questions
 
-- ¿El API server de Hermes permite marcar una petición como turno de voz, para usar `auxiliary.voice_chat`?
 - ¿Qué framework de UI se usa en la etapa B? Se decide al iniciarla.
-- ¿El API server permite reemplazar una respuesta guardada para dejar solo la parte oída? Si no, se usa la nota en el siguiente turno.
+- ¿`VOICE_MODEL` queda en Sonnet sin razonamiento o pasa a Haiku? Lo decide el usuario tras probar la PWA.
 - ¿Cuántos falsos disparos hay con el altavoz de la Mac y del iPhone, sin audífonos? Se mide en la tarea 5.6 para ajustar el umbral.

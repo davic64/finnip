@@ -1,0 +1,21 @@
+{
+  "name": "finnip-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && node copy-vad-assets.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  },
+  "dependencies": {
+    "@ricky0123/vad-web": "^0.0.31",
+    "@types/three": "^0.181.0",
+    "lucide": "^0.553.0",
+    "onnxruntime-web": "^1.31.1",
+    "three": "^0.181.0"
+  }
+}
