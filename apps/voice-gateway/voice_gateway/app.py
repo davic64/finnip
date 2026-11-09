@@ -61,7 +61,7 @@ class Session:
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
         self.stats = stats        # async () -> host numbers, or None
         self.calendar = calendar  # ICloudCalendar-like (async events()), or None
-        self.router = router      # ModelRouter-like (state, set(), async models()), or None
+        self.router = router      # ModelRouter-like (route(), order(), async apply()), or None
         self.theme = theme if theme is not None else {}  # shared {"rgb": [r, g, b]} of the monitors
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
@@ -182,6 +182,8 @@ class Session:
         if data.get("wake"):  # standby: only a phrase that starts with "Finnip" counts
             rest = T.after_wake_word(transcript)
             if rest is None:
+                if transcript:  # to tune the wake word: what the STT wrote when "Finnip" was not found
+                    log.warning("no wake word: %r", transcript[:80])
                 await self.send({"type": "transcript", "text": ""})
                 return
             await self.send({"type": "wake"})
@@ -216,27 +218,11 @@ class Session:
 
     async def model_command(self, user_text):
         """The spoken answer to "usa Opus" / "el normal sea DeepSeek", or None when it is not one."""
-        order = T.model_order(user_text) if self.router else None
+        order = self.router.order(user_text) if self.router else None
         if order is None:
             return None
-        kind, value = order
-        if kind == "use" and value in T.SUBSCRIPTION:
-            self.router.set(use=value)
-            return f"Listo, señor. Uso {value.capitalize()} de su suscripción."
-        if kind == "use":
-            if not self.router.state.get("normal"):
-                return "Aún no tengo un modelo normal, señor. Dígame cuál, por ejemplo: el normal sea DeepSeek."
-            self.router.set(use="normal")
-            return f"Listo, señor. Uso el modelo normal, {T.model_label(self.router.state['normal'])}."
-        try:
-            picked = T.pick_model(value, await self.router.models())
-        except Exception:
-            log.exception("OpenRouter models")
-            return "No pude consultar los modelos de OpenRouter, señor."
-        if not picked:
-            return f"No encontré «{value}» en OpenRouter, señor."
-        self.router.set(use="normal", normal=picked)
-        return f"Listo, señor. El normal ahora es {T.model_label(picked)}, y ya lo estoy usando."
+        message, _ = await self.router.apply(order)
+        return message
 
     async def reply(self, user_text):
         local = await self.model_command(user_text)  # answered here, without Hermes
@@ -316,8 +302,8 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         monitor = MonitorLight() if os.environ.get("BRIDGE_API_KEY") else None
         plugin = os.environ.get("CALENDAR_PLUGIN", "")
         calendar = ICloudCalendar(plugin) if plugin and os.path.exists(plugin) and os.environ.get("CALDAV_CALENDAR_URL") else None
-        state = os.environ.get("MODEL_STATE", "")
-        router = ModelRouter(state) if state and os.path.isdir(os.path.dirname(state)) else None
+        models_plugin, state = os.environ.get("MODELS_PLUGIN", ""), os.environ.get("MODEL_STATE", "")
+        router = ModelRouter(models_plugin, state) if os.path.exists(models_plugin) and state else None
         hermes.router = router
 
     recent = {"text": "", "at": 0.0}
@@ -386,4 +372,6 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
 
     # gzip: the VAD's onnxruntime wasm goes from ~15 MB to ~4 MB, which matters over a Tailscale relay.
     middleware = [Middleware(TailscaleOnly), Middleware(GZipMiddleware, minimum_size=1024)]
-    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app.state.theme = theme  # shared state, set by tests
+    return app

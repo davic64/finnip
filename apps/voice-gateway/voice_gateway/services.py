@@ -73,32 +73,21 @@ class ICloudCalendar:
     async def events(self, start, end, limit=100):
         return await asyncio.to_thread(self.plugin.list_events, start, end, limit)
 class ModelRouter:
-    """Which model answers voice turns, kept in a small JSON file so it survives restarts:
-    {"use": "opus" | "sonnet" | "normal", "normal": "<OpenRouter model id>"}."""
-    def __init__(self, path):
-        self.path = path
-        try:
-            with open(path) as f:
-                self.state = json.load(f)
-        except (OSError, ValueError):
-            self.state = {"use": "sonnet", "normal": ""}  # what Finnip used before this existed
-        self.http = httpx.AsyncClient(timeout=15)
+    """Voice side of the finnip-models Hermes plugin (mounted read only), which owns the model orders
+    and the state shared with Telegram ({"use", "normal"} in MODEL_STATE)."""
+    def __init__(self, plugin_path, state_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_models", plugin_path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+        self.state_path = state_path
     def route(self):
-        from .text import SUBSCRIPTION
-        use, normal = self.state.get("use"), self.state.get("normal")
-        if use == "normal" and normal:
-            return "openrouter", normal
-        return "anthropic", SUBSCRIPTION.get(use, SUBSCRIPTION["sonnet"])
-    def set(self, **changes):
-        self.state.update(changes)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.state, f)
-        os.replace(tmp, self.path)
-    async def models(self):
-        resp = await self.http.get("https://openrouter.ai/api/v1/models")
-        resp.raise_for_status()
-        return resp.json()["data"]
+        return self.plugin.route(self.plugin.load_state(self.state_path))
+    def order(self, text):
+        return self.plugin.model_order(text)
+    async def apply(self, order):
+        """(what to tell the user, (provider, model) or None)."""
+        return await asyncio.to_thread(self.plugin.apply_order, order, self.state_path)
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")

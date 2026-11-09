@@ -314,13 +314,12 @@ class GatewayTest(unittest.TestCase):
 
     def test_model_orders_are_answered_without_hermes_and_saved(self):
         import tempfile
+        from pathlib import Path
         from voice_gateway.services import ModelRouter
+        plugin = Path(__file__).resolve().parents[2] / "finnip-models" / "__init__.py"
         with tempfile.TemporaryDirectory() as tmp:
-            router = ModelRouter(os.path.join(tmp, "model.json"))
-
-            async def models():
-                return [{"id": "z-ai/glm-5.3-prime", "created": 2}]
-            router.models = models
+            router = ModelRouter(str(plugin), os.path.join(tmp, "model.json"))
+            router.plugin.openrouter_models = lambda: [{"id": "z-ai/glm-5.3-prime", "created": 2}]
             client = TestClient(create_app(self.stt, self.hermes, FakeTts(), router=router))
             with client.websocket_connect("/ws", headers=USER) as ws:
                 self.say(ws, "usa opus")
@@ -331,7 +330,7 @@ class GatewayTest(unittest.TestCase):
                 self.say(ws, "que el normal sea glm")
                 self.receive_until(ws, "done")
             self.assertEqual(self.hermes.prompts, [])  # never reached Hermes
-            self.assertEqual(ModelRouter(os.path.join(tmp, "model.json")).route(), ("openrouter", "z-ai/glm-5.3-prime"))
+            self.assertEqual(router.route(), ("openrouter", "z-ai/glm-5.3-prime"))
 
 
 if __name__ == "__main__":

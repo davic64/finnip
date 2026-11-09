@@ -56,49 +56,6 @@ def heard_text(sentences, played_seq, played_ms):
     return " ".join(heard)
 
 
-# Model switching by voice. "opus"/"sonnet" run on the user's Claude subscription (Hermes' Anthropic
-# provider); "normal" is an OpenRouter model the user picks by name.
-SUBSCRIPTION = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5"}
-_USE = re.compile(r"^(?:usa|utiliza|cambia|cambiate|pasate|regresa|vuelve)(?: a)?(?: al| el)? (?:modelo )?(opus|sonnet|normal)$")
-_SET_NORMAL = (
-    re.compile(r"^(?:que )?el (?:modelo )?normal (?:ahora )?(?:sea|es) (.+)$"),
-    re.compile(r"^(?:cambia|pon) (?:el )?(?:modelo )?normal (?:a|en|como) (.+)$"),
-    re.compile(r"^usa (.+) como (?:el )?(?:modelo )?normal$"),
-)
-def model_order(text):
-    """("use", "opus"|"sonnet"|"normal") or ("set_normal", "<name>") for a model order, else None."""
-    words = _norm(text).split()
-    while words and words[0] in WAKE_LEADS | {WAKE_WORD}:
-        words = words[1:]  # "Oye Finnip, usa Opus"
-    phrase = " ".join(words)
-    if match := _USE.match(phrase):
-        return "use", match.group(1)
-    for pattern in _SET_NORMAL:
-        if match := pattern.match(phrase):
-            return "set_normal", match.group(1)
-    return None
-# Words that mark a special build of a model; skipped unless the user names them ("glm flash").
-MODEL_VARIANTS = {"legal", "batch", "air", "mini", "nano", "lite", "flash", "flashx", "vision", "omni",
-                  "thinking", "distill", "preview", "free", "exacto", "audio", "image", "search", "online"}
-def pick_model(query, models):
-    """Newest OpenRouter model whose id has every word of the query and no variant the user didn't ask for.
-    ponytail: name heuristic, no quality ranking; the user hears the exact pick and can name a more
-    specific one ("glm 5.3 prime")."""
-    want = [w for w in re.split(r"[^a-z0-9.]+", query.lower()) if w]
-    def fits(model):
-        if ":" in model["id"]:
-            return False
-        parts = [p for p in re.split(r"[^a-z0-9.]+", model["id"].lower()) if p]
-        if not all(w in "".join(parts) for w in want):
-            return False
-        return all(p in want for p in parts if p in MODEL_VARIANTS)
-    dated = lambda m: bool(re.search(r"-\d{4}$", m["id"]))  # "-1017": a snapshot of a model, not the model
-    hits = [m for m in models if fits(m)]
-    return max(hits, key=lambda m: (not dated(m), m.get("created", 0)))["id"] if hits else None
-def model_label(model_id):
-    """'z-ai/glm-5.3-prime' -> 'GLM 5.3 prime' for speech."""
-    name = model_id.split("/", 1)[-1].replace("-", " ")
-    return re.sub(r"\b(glm|gpt|qwen\d*|kimi|deepseek)\b", lambda m: m.group(1).upper() if m.group(1) in ("glm", "gpt") else m.group(1).capitalize(), name)
 def with_heard_note(user_text, heard):
     if heard is None:
         return user_text
@@ -207,22 +164,29 @@ def reminders_note(items, user_text, label="Próximos 7 días"):
             f"{listed}. La pantalla ya los muestra. Si el usuario pidió exactamente este periodo, responde con estos "
             f"datos sin llamar herramientas; si pidió otro periodo o fecha, consulta finnip_calendar con ese rango.]"
             f"\n\n{user_text}")
-WAKE_WORD = "finnip"
+WAKE_WORD = "finip"  # as _sound() writes "Finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
-WAKE_VARIANTS = {"philip", "phillip", "felip", "finip", "finny", "fini"}
+WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini"}  # after _sound()
 WAKE_TOKEN = re.compile(r"[^\s,.;:¿?¡!]+")
 
 
 # ponytail: fuzzy match on Parakeet's transcript ("Finny", "Cinip", "FinNip"); the lone word is often
 # misheard ("Thing"), so it works best followed by the order. Upgrade: a real wake-word model
 # (Porcupine or a custom openWakeWord) in the browser.
+def _sound(word):
+    """Spelling-blind form: "Phinnip" -> "finip", "Phillip" -> "filip"."""
+    return re.sub(r"(.)\1+", r"\1", word.replace("ph", "f"))
+
+
 def after_wake_word(text):
-    """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None."""
+    """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None.
+    One lead word may come first: "Oye", or a short one the STT adds ("Ah, Finnip", "Y Finnip")."""
     for i, m in enumerate(WAKE_TOKEN.finditer(text)):
-        word = _norm(m.group()).replace(" ", "")
-        if word in WAKE_VARIANTS or (len(word) >= 4 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.6):
+        word = _sound(_norm(m.group()).replace(" ", ""))
+        # 0.7 against "finip": "Cinip", "Finit", "Filip" pass; "final", "fino" do not.
+        if word in WAKE_VARIANTS or (len(word) >= 4 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.7):
             return text[m.end():].lstrip(" ,.;:!").strip()
-        if i >= 1 or word not in WAKE_LEADS:
+        if i >= 1 or (word not in WAKE_LEADS and len(word) > 3):
             return None
     return None

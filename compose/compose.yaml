@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     volumes:
       - ../data/hermes:/opt/data
+      # Model choice shared with the voice gateway (finnip-models plugin).
+      - ../data/models:/opt/finnip-models
     command: gateway run
     env_file:
         - ../config/hermes-bridge.env
@@ -12,6 +14,7 @@ services:
       FINNIP_BRIDGE_URL: http://home-bridge:3000
       # API server reachable inside the Compose network only (no published port); voice-gateway uses it.
       API_SERVER_HOST: 0.0.0.0
+      MODEL_STATE: /opt/finnip-models/model.json
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -51,8 +54,11 @@ services:
       HERMES_URL: http://hermes:8642
       # The agenda panel reuses the finnip-calendar plugin's CalDAV reader (iCloud credentials in the env file).
       CALENDAR_PLUGIN: /opt/finnip-calendar/__init__.py
-      # Voice model choice ("usa Opus", "el normal sea GLM"), kept across restarts.
-      MODEL_STATE: /data/model.json
+      # Model orders ("usa Opus", "el normal sea GLM") come from the finnip-models plugin; the choice is
+      # shared with Hermes (Telegram) in data/models, readable through group 10000.
+      MODELS_PLUGIN: /opt/finnip-models-plugin/__init__.py
+      MODEL_STATE: /models/model.json
+    group_add: ["10000"]
     # Host loopback only: reached through `tailscale serve`, never directly from the LAN.
     ports:
       - "127.0.0.1:8765:8765"
@@ -60,6 +66,7 @@ services:
       # The built PWA, mounted so a UI rebuild is live without restarting the container.
       - ../apps/finnip-app/dist:/app/static:ro
       - ../apps/finnip-calendar:/opt/finnip-calendar:ro
-      - ../data/voice-gateway:/data
+      - ../apps/finnip-models:/opt/finnip-models-plugin:ro
+      - ../data/models:/models
     depends_on:
       - hermes
