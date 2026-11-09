@@ -92,6 +92,7 @@ const PRE_SPEECH_FRAMES = 10; // Silero v5 frames are 32 ms
 const preSpeech: Float32Array[] = [];
 let streaming = false;
 let liveBubble: HTMLElement | null = null;
+let lastUserBubble: HTMLElement | null = null;
 
 function endLiveBubble(remove: boolean) {
   if (remove) liveBubble?.remove();
@@ -251,8 +252,11 @@ link.onEvent = (e) => {
         return setState(restingState());
       }
       acceptAudio = true;
+      // A continuation after a pause comes back merged with the previous phrase: show one bubble.
+      if (e.merged && lastUserBubble !== liveBubble) lastUserBubble?.remove();
       if (liveBubble) liveBubble.textContent = e.text;
-      else bubble("user", e.text);
+      else liveBubble = bubble("user", e.text);
+      lastUserBubble = liveBubble;
       endLiveBubble(false);
       finnipBubble = null;
       setState("thinking");

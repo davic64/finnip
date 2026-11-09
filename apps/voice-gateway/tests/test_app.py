@@ -171,6 +171,27 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(got[0], {"type": "transcript", "text": "hola finnip"})
         self.assertEqual(self.stt.calls, 1)  # the silence-triggered partial was the final transcript
 
+    def test_pause_mid_sentence_merges_both_parts(self):
+        self.hermes.replies += [([], True), (["Son las diez, señor."], False)]  # 1st reply still thinking
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "oye, quería preguntarte")
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": "oye, quería preguntarte"})
+            self.say(ws, "qué hora es")
+            got = self.receive_until(ws, "done")
+        self.assertEqual(got[0], {"type": "transcript", "text": "oye, quería preguntarte qué hora es", "merged": True})
+        self.assertEqual(self.hermes.prompts[-1], "oye, quería preguntarte qué hora es")
+        self.assertEqual(self.hermes.closed, 2)  # the half question was cancelled
+
+    def test_no_merge_once_finnip_started_talking(self):
+        self.hermes.replies += [(["Claro. "], True), (["Listo."], False)]
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "ayúdame con algo")
+            self.receive_until(ws, "audio")
+            ws.receive_bytes()
+            self.say(ws, "apaga la lámpara")
+            got = self.receive_until(ws, "done")
+        self.assertIn({"type": "transcript", "text": "apaga la lámpara"}, got)
+
     def test_aborted_utterance_is_dropped(self):
         with self.client.websocket_connect("/ws", headers=USER) as ws:
             ws.send_json({"type": "utterance_start"})

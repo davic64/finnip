@@ -77,6 +77,8 @@ La síntesis de la frase N+1 corre mientras suena la N. El cliente reproduce los
 - **Transcripción en vivo:** mientras llega audio, el servidor retranscribe lo acumulado cada ~0.5 s (si hay al menos 0.5 s nuevos) y envía `partial`. La PWA lo muestra como texto que se va escribiendo.
 - Al detectar el final manda `utterance_end` y el servidor hace la transcripción final con faster-whisper (`language: es`, `vad_filter`, el mismo `initial_prompt` que Hermes). Si el VAD descarta el segmento (ruido corto), la PWA manda `utterance_abort` y el servidor lo tira.
 - **Costo:** cada parcial retranscribe todo el audio acumulado, así que el CPU crece con frases largas. Para frases de voz normales (menos de 10 s) es aceptable en el EliteBook.
+- **Pausas a media frase:** el VAD da por terminada una frase tras 0.6 s de silencio. Si el usuario sigue hablando antes de que Finnip diga algo (dentro de 8 s), el servidor cancela la respuesta en curso y envía a Hermes las dos partes como un solo mensaje. Responde `transcript` con `"merged": true` y la PWA junta ambas en una sola burbuja. Una vez que Finnip empezó a hablar, una frase nueva es una interrupción (decisión 9), no una continuación.
+- **Transcripción final inmediata:** en cuanto el final del audio queda en silencio (~0.2 s), el servidor transcribe de inmediato. Si al llegar `utterance_end` todo lo posterior es silencio, ese texto es la transcripción final y no se repite el trabajo (de ~0.9 s a ~0.05 s, medido).
 - **Protección contra duplicados:** el servidor ignora una transcripción idéntica a la anterior si llega en menos de 5 s. Evita que Hermes encole repeticiones, como pasó en la primera prueba, cuando varios toques crearon varios detectores en la PWA.
 - **Permiso primero:** la PWA pide el micrófono en el mismo toque, antes de cargar el detector (~4 MB con gzip), y lo precarga al abrir la página.
 - **Por qué en el cliente:** solo sube audio con voz, y el ESP32 puede usar su propio VAD o un botón con el mismo protocolo.
@@ -104,7 +106,7 @@ Es el mismo para la PWA y para el ESP32.
 **Del servidor al cliente:**
 - JSON `{"type":"ready","version":1}`, como respuesta a `hello`.
 - JSON `{"type":"partial","text":...}`: transcripción provisional mientras el usuario habla.
-- JSON `{"type":"transcript","text":...}`: la transcripción final. Si el texto viene vacío, era silencio.
+- JSON `{"type":"transcript","text":...,"merged":true?}`: la transcripción final. Si el texto viene vacío, era silencio. `merged` indica que incluye la frase anterior (continuación tras una pausa).
 - JSON `{"type":"reply_text","seq":n,"text":...}`, por frase.
 - Frames binarios con el audio de cada frase, precedidos de `{"type":"audio","seq":n,"format":"mp3"}`.
 - JSON `{"type":"resume"}`: la interrupción por voz era eco y el cliente debe reanudar el audio pausado.

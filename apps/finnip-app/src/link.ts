@@ -2,7 +2,7 @@
 export type ServerEvent =
   | { type: "ready"; version: number }
   | { type: "partial"; text: string }
-  | { type: "transcript"; text: string }
+  | { type: "transcript"; text: string; merged?: boolean }
   | { type: "reply_text"; seq: number; text: string }
   | { type: "audio"; seq: number; format: string }
   | { type: "resume" }

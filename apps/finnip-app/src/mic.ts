@@ -34,7 +34,7 @@ export class Mic {
       onnxWASMBasePath: "/vad/",
       positiveSpeechThreshold: 0.6,
       negativeSpeechThreshold: 0.45,
-      redemptionMs: 450, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
+      redemptionMs: 600, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
       minSpeechMs: 250,
       preSpeechPadMs: 300,
       getStream: async () => stream,

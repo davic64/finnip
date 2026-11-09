@@ -31,6 +31,9 @@ TAIL_SILENCE_BYTES = 6400    # 0.2 s of silence at the tail triggers an immediat
 # ponytail: fixed RMS threshold; a whispered last syllable could read as silence. Tune with real mics.
 SILENCE_RMS = 400
 DUPLICATE_WINDOW = 5.0       # seconds in which an identical transcript is dropped
+# A phrase that arrives before Finnip has said anything continues the previous one (the user paused
+# mid-sentence): the pending reply is cancelled and both parts go to Hermes as one message.
+MERGE_WINDOW = 8.0           # seconds after the previous phrase in which a continuation is merged
 
 
 def allowed_user(headers):
@@ -66,6 +69,8 @@ class Session:
         self.recent = recent if recent is not None else {"text": "", "at": 0.0}
         self.sentences = []       # current reply, index == audio seq
         self.pending_heard = None
+        self.user_text, self.user_at = "", 0.0  # last phrase sent to Hermes
+        self.spoke = False        # the current reply already sent audio
         self.lock = asyncio.Lock()
 
     async def send(self, obj, audio=None):
@@ -174,16 +179,21 @@ class Session:
             await self.send({"type": "done"})  # same phrase again (duplicated client), Hermes would queue it
             return
         self.recent.update(text=transcript, at=now)
+        merge = (bool(transcript) and not barge_in and not self.spoke and self.turn is not None
+                 and not self.turn.done() and now - self.user_at < MERGE_WINDOW)
         await self.stop_turn(data if barge_in else None)
-        await self.send({"type": "transcript", "text": transcript})
+        if merge:
+            transcript = f"{self.user_text} {transcript}"
+        await self.send({"type": "transcript", "text": transcript, **({"merged": True} if merge else {})})
         if not transcript:
             await self.send({"type": "done"})
             return
+        self.user_text, self.user_at = transcript, now
         self.turn = asyncio.create_task(self.reply(transcript))
 
     async def reply(self, user_text):
         prompt = T.with_heard_note(user_text, self.pending_heard)
-        self.pending_heard, self.sentences = None, []
+        self.pending_heard, self.sentences, self.spoke = None, [], False
         queue = asyncio.Queue()
         synth = []
 
@@ -208,6 +218,7 @@ class Session:
             while (item := await queue.get()) is not None:
                 seq, sentence, task = item
                 audio = await task
+                self.spoke = True
                 await self.send({"type": "reply_text", "seq": seq, "text": sentence})
                 await self.send({"type": "audio", "seq": seq, "format": "mp3"}, audio)
 
