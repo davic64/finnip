@@ -11,6 +11,7 @@ BRIDGE_URL = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstr
 ACTIONS = (
     "list", "status", "on", "off", "brightness", "color",
     "open", "close", "stop", "position", "temperature", "hvac_mode",
+    "play", "command", "pause", "resume", "volume", "run",
 )
 # Parameters each action forwards to Home Bridge, which validates them again.
 ACTION_FIELDS = {
@@ -19,6 +20,9 @@ ACTION_FIELDS = {
     "position": ("position",),
     "temperature": ("temperature",),
     "hvac_mode": ("hvac_mode",),
+    "play": ("query",),
+    "command": ("text",),
+    "volume": ("volume",),
 }
 ENTITY_ID = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 
@@ -98,7 +102,12 @@ SCHEMA = {
     "name": "finnip_lights",
     "description": (
         "Controla los dispositivos del hogar que el usuario expuso a Finnip "
-        "(luces, interruptores, persianas y climatización). "
+        "(luces, interruptores, persianas, climatización y bocinas Alexa). "
+        "Alexa (dispositivo 'echo'): play reproduce música de Apple Music con query (canción, artista, "
+        "playlist o género); command le dice a Alexa un texto como si el usuario se lo hablara, por ejemplo "
+        "para crear un recordatorio o alarma en Alexa o hacerle una pregunta; pause, resume y volume (0-100). "
+        "Alexa no permite compras desde Finnip. "
+        "Los modos (por ejemplo 'Modo estudio', 'Modo cine') son scripts de Home Assistant: actívalos con run. "
         "Para actuar pasa directamente el nombre del dispositivo en device (por ejemplo 'lámpara'); "
         "no necesitas llamar list antes. Usa list solo para descubrir dispositivos o sus capabilities. "
         "Si el nombre no coincide o es ambiguo, el error incluye los dispositivos disponibles. "
@@ -142,6 +151,22 @@ SCHEMA = {
             "hvac_mode": {
                 "type": "string",
                 "description": "Uno de los hvac_modes del dispositivo, por ejemplo cool u off",
+            },
+            "query": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Para play en Alexa: qué reproducir, por ejemplo 'Coldplay' o 'música para concentrarse'",
+            },
+            "text": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Para command en Alexa: la frase en español tal como se la dirías a Alexa, sin decir 'Alexa'",
+            },
+            "volume": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Para volume en Alexa: volumen en porcentaje",
             },
         },
         "required": ["action"],
@@ -222,6 +247,105 @@ def parse_fast_order(message):
     return FAST_VERBS[words[0]], " ".join(target_words), None
 
 
+MUSIC_WORDS = {"musica", "cancion", "alexa", "reproduccion"}
+PLAY_VERBS = {"reproduce", "reproduceme", "reproducir", "toca", "tocame"}
+# A play request made only of these words names nothing ("la música que quieras", "algo"): the model
+# picks the artist (with the user's taste and exclusions from SOUL.md) instead of Alexa searching it.
+VAGUE = {"la", "el", "los", "las", "un", "una", "unos", "unas", "musica", "cancion", "canciones", "algo", "lo",
+         "que", "tu", "quieras", "quiera", "sea", "cualquier", "cualquiera", "cosa", "te", "guste", "gustes",
+         "elijas", "escojas", "decidas", "de", "mi", "me", "sorprendeme", "bueno", "buena", "buenas", "otra", "otro",
+         "a", "gusto", "tuyo", "tuya", "eleccion", "libre"}
+VOLUME = re.compile(r"^(?:pon |sube |baja )?(?:el )?volumen (?:de alexa )?(?:a |al |en )?(\d{1,3})(?: ciento)?$")  # "%" and filler "por" are gone by then
+
+
+CHOICE = {"quieras", "quiera", "elijas", "elige", "escojas", "escoge", "decidas", "sorprendeme", "gustes"}
+GENERIC = {"musica", "algo", "cancion", "canciones", "una", "unas", "lo"}
+
+
+def leaves_choice(query):
+    """True when the user leaves the pick to Finnip: "lo que quieras para hacer el aseo",
+    "música para concentrarme", "algo tranquilo". "música de los 80" or "algo de Queen" name it."""
+    words = normalize(query).split()
+    if set(words) <= VAGUE or CHOICE & set(words):
+        return True
+    return words[0] in GENERIC and (len(words) == 1 or words[1] != "de")
+
+
+def parse_music_order(message):
+    """Short, unambiguous orders for the Alexa speaker -> (action, body), else None.
+    '"Pausa la música."' -> ("pause", None); '"Reproduce Coldplay en Alexa"' -> ("play", {"query": "Coldplay"})."""
+    raw = re.sub(r"^((oye|hey|ok) )?finnip[,.]?\s*", "", message.strip().strip('"').strip(), flags=re.IGNORECASE).rstrip(".!")
+    text = normalize(raw)
+    if "?" in text:
+        return None
+    words = [w for w in re.sub(r"[^\w ]", " ", text).split() if w not in FILLER]
+    if not words or len(words) > 8:
+        return None
+    head, rest = words[0], set(words[1:])
+    if head in {"pausa", "pausar", "pausala", "pausalo"} and len(words) <= 4:
+        return "pause", None
+    if head in {"deten", "detener", "para"} and rest & MUSIC_WORDS and len(words) <= 4:
+        return "pause", None
+    if len(words) <= 4 and (head in {"reanuda", "reanudar"} or
+                            (head in {"continua", "continuar", "sigue", "seguir"} and rest & MUSIC_WORDS)):
+        return "resume", None
+    if len(words) == 1 and head in {"continua", "continuar", "sigue", "seguir", "continuala", "siguele"}:
+        return "resume_if_paused", None  # "continúa" alone may mean "keep talking": only if music is paused
+    volume = VOLUME.match(" ".join(words))
+    if volume and int(volume.group(1)) <= 100:
+        return "volume", {"volume": int(volume.group(1))}
+    if head in PLAY_VERBS and len(words) > 1:
+        # Keep the user's own spelling for the search, minus the verb and a trailing "en Alexa".
+        query = re.sub(r"\s+en (la )?alexa$", "", raw.split(None, 1)[1], flags=re.IGNORECASE)
+        query = " ".join(re.sub(r"[.,;:!¡¿?]+", " ", query).split())  # "Iron Man. De Black Sabbath" from speech
+        if not query or leaves_choice(query):
+            return None
+        return "play", {"query": query}
+    return None
+
+
+# "Modo estudio", "activa el modo cine", "voy a ver una película": runs the Home Assistant script named
+# "Modo <x>" (lights and volume, edited in HA); then the model picks the music for it.
+MODE = re.compile(r"^(?:(?:activa|activame|pon|ponme|entra|entremos|cambia|cambiame|inicia|arranca)(?: a| en| al)? )?"
+                  r"(?:el )?mod(?:o|io) (\w+(?: \w+){0,2})$")  # "Modio": how the STT once wrote it
+MOVIE = re.compile(r"^(?:voy|vamos) a ver (?:una )?(?:pelicula|peli)$")
+QUIET_MODES = {"modo cine"}  # ponytail: hardcoded; move to the script's description if modes multiply
+
+
+def parse_mode_order(message):
+    """'"Activa el modo trabajo profundo."' -> "modo trabajo profundo"; anything else -> None."""
+    text = normalize(re.sub(r"^((oye|hey|ok) )?finnip[,.]?\s*", "", message.strip().strip('"'), flags=re.IGNORECASE))
+    if "?" in text:
+        return None
+    text = " ".join(w for w in re.sub(r"[^\w ]", " ", text).split() if w not in FILLER)
+    if MOVIE.match(text):
+        return "modo cine"
+    mode = MODE.match(text)
+    return f"modo {mode.group(1)}" if mode else None
+
+
+def mode_fast_path(user_message):
+    mode = parse_mode_order(user_message)
+    if mode is None:
+        return None
+    try:
+        scripts = {normalize(d.get("name", "")): d["id"] for d in call_bridge("GET", "/devices").get("devices", [])
+                   if d.get("domain") == "script"}
+        name = difflib.get_close_matches(mode, list(scripts), n=1, cutoff=0.8)  # "modo calido" for "cálido"
+        if not name:
+            return None
+        result = call_bridge("POST", f"/devices/{scripts[name[0]]}/run")
+    except Exception as error:
+        return {"context": f"[finnip fast path] Intenté activar el {mode} antes de tu turno y falló: {error}. "
+                           "Resuélvelo tú normalmente."}
+    music = ("Este modo no lleva música: no reproduzcas nada." if name[0] in QUIET_MODES else
+             f"Ahora elige tú un artista o canción concreto que vaya con el {name[0]} y reprodúcelo con "
+             "finnip_lights play en la Echo (nunca reggaetón, banda ni cumbia).")
+    return {"context": (
+        f"[finnip fast path] El {name[0]} YA se activó antes de tu turno (luces y volumen): "
+        f"{json.dumps(result, ensure_ascii=False)}. {music} Luego confirma al usuario en una frase corta.")}
+
+
 def fast_targets(target, devices, action="on"):
     """Device ids for a parsed target: every light for "all", else the one device whose name
     contains every target word. None when nothing or more than one device matches."""
@@ -234,12 +358,38 @@ def fast_targets(target, devices, action="on"):
     return ids if len(ids) == 1 else None
 
 
+def music_fast_path(user_message):
+    order = parse_music_order(user_message)
+    if order is None:
+        return None
+    action, body = order
+    try:
+        speakers = [d for d in call_bridge("GET", "/devices").get("devices", []) if d.get("domain") == "media_player"]
+        if len(speakers) != 1:
+            return None
+        if action == "resume_if_paused":
+            if speakers[0].get("state") != "paused":
+                return None
+            action = "resume"
+        result = call_bridge("POST", f"/devices/{speakers[0]['id']}/{action}", body)
+    except Exception as error:
+        return {"context": f"[finnip fast path] Intenté '{action}' en Alexa antes de tu turno y falló: {error}. "
+                           "Resuélvelo tú normalmente."}
+    return {"context": (
+        f"[finnip fast path] Esta orden de música YA se ejecutó en Alexa antes de tu turno: {action}. "
+        f"Respuesta de Home Bridge: {json.dumps(result, ensure_ascii=False)}. "
+        "No vuelvas a llamar herramientas ni a verificar; confirma al usuario en una frase corta.")}
+
+
 def fast_path_hook(user_message=None, **kwargs):
     if not isinstance(user_message, str) or "\n" in user_message.strip():
         return None
+    mode = mode_fast_path(user_message)
+    if mode is not None:
+        return mode
     order = parse_fast_order(user_message)
     if order is None:
-        return None
+        return music_fast_path(user_message)
     action, target, body = order
     try:
         ids = fast_targets(target, call_bridge("GET", "/devices").get("devices", []), action)

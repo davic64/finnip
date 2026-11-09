@@ -10,7 +10,14 @@ export type ServerEvent =
   | { type: "resume" }
   | { type: "wake" }
   | { type: "theme"; rgb: [number, number, number] }
+  | {
+      type: "now_playing"; active: boolean; state: string; title: string | null; artist: string | null;
+      album: string | null; image: string | null; volume: number | null; duration: number | null;
+      position: number | null; position_at: string | null;
+    }
+  | { type: "device"; id: string; name: string; on: boolean; brightness: number | null; rgb: [number, number, number] | null }
   | ({ type: "stats" } & Stats)
+  | { type: "reminders"; title: string; items: { name: string; when: string; date: string; day: string; time: string }[] }
   | { type: "done" }
   | { type: "error"; message: string };
 

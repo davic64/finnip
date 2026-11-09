@@ -248,12 +248,34 @@ class GatewayTest(unittest.TestCase):
             got = self.receive_until(ws, "done")
         self.assertFalse(any(isinstance(m, dict) and m["type"] == "stats" for m in got))
 
+    def test_reminders_question_shows_them_before_the_reply(self):
+        class FakeCalendar:
+            async def events(self, start, end):
+                return [{"summary": "Pagar luz", "start": "2030-01-02T09:00:00-06:00", "all_day": False}]
+
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), calendar=FakeCalendar()))
+        self.hermes.replies += [(["Tiene uno."], False), (["Listo."], False)]
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "qué recordatorios tengo")
+            got = self.receive_until(ws, "done")
+            panel = [m for m in got if isinstance(m, dict) and m["type"] == "reminders"]
+            self.assertEqual(panel, [{"type": "reminders", "title": "Próximos 7 días",
+                                     "items": [{"name": "Pagar luz", "when": "mié 2 ene · 09:00", "date": "2030-01-02",
+                                                "day": "mié 2 ene", "time": "09:00"}]}])
+            self.assertLess(got.index(panel[0]), next(i for i, m in enumerate(got) if isinstance(m, dict) and m["type"] == "audio"))
+            self.assertIn("Pagar luz (mié 2 ene · 09:00)", self.hermes.prompts[0])
+            self.say(ws, "ponme un recordatorio mañana a las 8")
+            got = self.receive_until(ws, "done")
+        self.assertFalse(any(isinstance(m, dict) and m["type"] == "reminders" for m in got))
+
     def test_theme_follows_the_monitors_and_survives_them_turning_off(self):
         class FakeMonitor:
+            id = "light.leds_monitores"
             colors = [[20, 60, 255], None]
 
-            async def rgb(self):
-                return self.colors.pop(0) if self.colors else None
+            async def devices(self):
+                rgb = self.colors.pop(0) if self.colors else None
+                return [{"id": self.id, "state": "on" if rgb else "off", "rgb_color": rgb}]
 
         with mock.patch("voice_gateway.app.THEME_POLL", 0.01), \
                 TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
@@ -263,6 +285,52 @@ class GatewayTest(unittest.TestCase):
                 ws.send_json({"type": "hello", "client": "pwa", "version": 1})
                 ws.receive_json()
                 self.assertEqual(ws.receive_json(), {"type": "theme", "rgb": [20, 60, 255]})
+
+    def test_device_changes_become_action_cards(self):
+        echo = [{"id": "media_player.echo", "domain": "media_player", "state": s, "media_title": "Song", "volume": 20}
+                for s in ("idle", "playing")]
+        off = {"id": "light.lampara", "name": "Lámpara", "state": "off"}
+        on = {"id": "light.lampara", "name": "Lámpara", "state": "on", "brightness": 10, "rgb_color": [255, 0, 0]}
+
+        class FakeMonitor:
+            id = "light.leds_monitores"
+            polls = [[off, echo[0]]] * 10  # first sight is not a change, so no card for it
+
+            async def devices(self):
+                return self.polls.pop(0) if self.polls else [echo[1], on]  # the Echo changes too: no card
+
+        with mock.patch("voice_gateway.app.THEME_POLL", 0.05), \
+                TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                ws.send_json({"type": "hello", "client": "pwa", "version": 1})
+                ws.receive_json()
+                got = [ws.receive_json() for _ in range(2)]
+        # The Echo starting a song is a now-playing update, not a device card.
+        self.assertEqual(got[0]["type"], "now_playing")
+        self.assertEqual((got[0]["active"], got[0]["title"], got[0]["volume"]), (True, "Song", 20))
+        self.assertEqual(got[1], {"type": "device", "id": "light.lampara", "name": "Lámpara",
+                                  "on": True, "brightness": 10, "rgb": [255, 0, 0]})
+
+
+    def test_model_orders_are_answered_without_hermes_and_saved(self):
+        import tempfile
+        from pathlib import Path
+        from voice_gateway.services import ModelRouter
+        plugin = Path(__file__).resolve().parents[2] / "finnip-models" / "__init__.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            router = ModelRouter(str(plugin), os.path.join(tmp, "model.json"))
+            router.plugin.openrouter_models = lambda: [{"id": "z-ai/glm-5.3-prime", "created": 2}]
+            client = TestClient(create_app(self.stt, self.hermes, FakeTts(), router=router))
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                self.say(ws, "usa opus")
+                got = self.receive_until(ws, "done")
+                spoken = " ".join(m["text"] for m in got if isinstance(m, dict) and m["type"] == "reply_text")
+                self.assertIn("Opus de su suscripción", spoken)
+                self.assertEqual(router.route(), ("anthropic", "claude-opus-5-5"))
+                self.say(ws, "que el normal sea glm")
+                self.receive_until(ws, "done")
+            self.assertEqual(self.hermes.prompts, [])  # never reached Hermes
+            self.assertEqual(router.route(), ("openrouter", "z-ai/glm-5.3-prime"))
 
 
 if __name__ == "__main__":

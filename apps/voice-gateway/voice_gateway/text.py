@@ -2,6 +2,8 @@
 import difflib
 import re
 import unicodedata
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 SENTENCE_END = re.compile(r"(?<=[.!?:;])\s+")
 FIRST_CLAUSE_END = re.compile(r"(?<=,)\s+")
@@ -96,22 +98,95 @@ def stats_note(s, user_text):
             f"\n\n{user_text}")
 
 
-WAKE_WORD = "finnip"
+# ponytail: keyword match; a phrase that also creates or cancels one goes to Hermes without the panel.
+REMINDER_WORDS = {"recordatorio", "recordatorios", "alarma", "alarmas", "calendario", "evento", "eventos", "agenda"}
+REMINDER_CHANGES = {"pon", "ponme", "crea", "creame", "agrega", "agregame", "anade", "programa", "programame",
+                    "cancela", "borra", "elimina", "quita", "cambia", "mueve", "pospon", "agendame", "agendalo",
+                    "agendar", "recuerdame", "recuerdamelo"}
+RANGE_WORDS = {"hoy", "manana", "semana", "mes", "ano"}
+def wants_reminders(text):
+    words = _norm(text).split()
+    if not words or words[0] == "agenda" or REMINDER_CHANGES & set(words):
+        return False
+    return bool(REMINDER_WORDS & set(words)) or ("tengo" in words and bool(RANGE_WORDS & set(words)))
+TZ = ZoneInfo("America/Mexico_City")
+DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+def now_playing(device):
+    """Home Bridge speaker -> the UI's now-playing event; active False when nothing is loaded."""
+    active = device.get("state") in ("playing", "paused") and bool(device.get("media_title"))
+    fields = ("media_title", "media_artist", "media_album", "media_image", "volume",
+              "media_duration", "media_position", "media_position_at")
+    return {"type": "now_playing", "active": active, "state": device.get("state"),
+            **{f.removeprefix("media_"): device.get(f) for f in fields}}
+def calendar_items(events, now=None):
+    """finnip-calendar events (sorted by start) as [{"name", "when", "date", "day", "time"}] in Mexico City
+    time; "when" is for Hermes, the rest lets the UI group by day. "time" is "" for all-day events."""
+    today = (now or datetime.now(TZ)).astimezone(TZ).date()
+    def day(d):
+        days = (d - today).days
+        return "Hoy" if days == 0 else "Mañana" if days == 1 else f"{DAYS[d.weekday()]} {d.day} {MONTHS[d.month - 1]}"
+    items = []
+    for event in events:
+        if event.get("all_day"):
+            on, clock = date.fromisoformat(event["start"]), ""
+        else:
+            at = datetime.fromisoformat(event["start"]).astimezone(TZ)
+            on, clock = at.date(), f"{at:%H:%M}"
+        label = day(on)
+        items.append({"name": event.get("summary") or "Sin título", "when": f"{label} · {clock or 'todo el día'}",
+                      "date": on.isoformat(), "day": label, "time": clock})
+    return items
+def agenda_range(text, now=None):
+    """(label, start, end) of the period the phrase asks about; the next 7 days by default."""
+    now = (now or datetime.now(TZ)).astimezone(TZ)
+    words = set(_norm(text).split())
+    today = datetime.combine(now.date(), time(), TZ)
+    upcoming = bool({"proxima", "proximo", "siguiente"} & words)
+    next_month = lambda d: (d.replace(day=1) + timedelta(days=32)).replace(day=1)  # noqa: E731
+    if "ano" in words:
+        year = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+        return ("Próximo año", year, year.replace(year=year.year + 1)) if upcoming else ("Este año", now, year)
+    if "mes" in words:
+        month = next_month(today)
+        return ("Próximo mes", month, next_month(month)) if upcoming else ("Este mes", now, month)
+    if "semana" in words:
+        monday = today + timedelta(days=7 - today.weekday())
+        return ("Próxima semana", monday, monday + timedelta(days=7)) if upcoming else ("Esta semana", now, monday)
+    if "hoy" in words:  # before "mañana": "hoy en la mañana" is today
+        return "Hoy", now, today + timedelta(days=1)
+    if "manana" in words:
+        return "Mañana", today + timedelta(days=1), today + timedelta(days=2)
+    return "Próximos 7 días", now, now + timedelta(days=7)
+def reminders_note(items, user_text, label="Próximos 7 días"):
+    listed = "; ".join(f"{i['name']} ({i['when']})" for i in items) or "ninguno"
+    return (f"[Eventos del calendario de iCloud del usuario para el periodo «{label}», leídos ahora mismo: "
+            f"{listed}. La pantalla ya los muestra. Si el usuario pidió exactamente este periodo, responde con estos "
+            f"datos sin llamar herramientas; si pidió otro periodo o fecha, consulta finnip_calendar con ese rango.]"
+            f"\n\n{user_text}")
+WAKE_WORD = "finip"  # as _sound() writes "Finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
-WAKE_VARIANTS = {"philip", "phillip", "felip", "finip", "finny", "fini"}
+WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini"}  # after _sound()
 WAKE_TOKEN = re.compile(r"[^\s,.;:¿?¡!]+")
 
 
 # ponytail: fuzzy match on Parakeet's transcript ("Finny", "Cinip", "FinNip"); the lone word is often
 # misheard ("Thing"), so it works best followed by the order. Upgrade: a real wake-word model
 # (Porcupine or a custom openWakeWord) in the browser.
+def _sound(word):
+    """Spelling-blind form: "Phinnip" -> "finip", "Phillip" -> "filip"."""
+    return re.sub(r"(.)\1+", r"\1", word.replace("ph", "f"))
+
+
 def after_wake_word(text):
-    """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None."""
+    """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None.
+    One lead word may come first: "Oye", or a short one the STT adds ("Ah, Finnip", "Y Finnip")."""
     for i, m in enumerate(WAKE_TOKEN.finditer(text)):
-        word = _norm(m.group()).replace(" ", "")
-        if word in WAKE_VARIANTS or (len(word) >= 4 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.6):
+        word = _sound(_norm(m.group()).replace(" ", ""))
+        # 0.7 against "finip": "Cinip", "Finit", "Filip" pass; "final", "fino" do not.
+        if word in WAKE_VARIANTS or (len(word) >= 4 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.7):
             return text[m.end():].lstrip(" ,.;:!").strip()
-        if i >= 1 or word not in WAKE_LEADS:
+        if i >= 1 or (word not in WAKE_LEADS and len(word) > 3):
             return None
     return None

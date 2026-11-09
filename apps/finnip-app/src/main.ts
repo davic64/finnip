@@ -4,6 +4,9 @@ import { Mic } from "./mic";
 import { Player } from "./player";
 import { Holo } from "./holo";
 import { Hud } from "./hud";
+import { showCard } from "./cards";
+import { showAgenda } from "./agenda";
+import { showNowPlaying } from "./nowplaying";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -97,7 +100,13 @@ function setState(next: State) {
   orb.setAttribute("aria-pressed", String(mic.isOpen));
 }
 
-const restingState = (): State => (!mic.isOpen ? "off" : asleep ? "standby" : "listening");
+// While the Echo plays, every turn ends in standby: the song's lyrics must not talk to Finnip.
+// "Finnip, …" or a tap wakes it up as usual.
+let musicOn = false;
+function restingState(): State {
+  if (mic.isOpen && musicOn && mode === "conversation") asleep = true;
+  return !mic.isOpen ? "off" : asleep ? "standby" : "listening";
+}
 
 function getPlayer() {
   if (!player) {
@@ -255,6 +264,17 @@ link.onEvent = (e) => {
       break;
     case "theme":
       setTheme(e.rgb);
+      break;
+    case "device":
+      showCard(e);
+      break;
+    case "now_playing":
+      showNowPlaying(e);
+      musicOn = e.active && e.state === "playing";
+      if (musicOn && state === "listening" && !streaming) setState(restingState());
+      break;
+    case "reminders":
+      if (acceptAudio) showAgenda(e);
       break;
     case "stats":
       if (acceptAudio) hud.show(e);

@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from voice_gateway import text as T
 
@@ -79,11 +80,57 @@ class WakeWordTest(unittest.TestCase):
         self.assertEqual(T.after_wake_word("Philip."), "")
         self.assertEqual(T.after_wake_word("Finip apar la lámpara."), "apar la lámpara.")
         self.assertEqual(T.after_wake_word("Oye, Finip."), "")
+        self.assertEqual(T.after_wake_word("Ah, Finnip, apaga la lámpara"), "apaga la lámpara")
+        self.assertEqual(T.after_wake_word("Y Phinnip qué hora es"), "qué hora es")
+        self.assertEqual(T.after_wake_word("Phillip, pausa"), "pausa")
 
     def test_other_speech_stays_asleep(self):
-        for text in ("apaga la lámpara", "fin de semana", "oye, ¿qué hora es?", "", "la TV dice Finnip"):
+        for text in ("apaga la lámpara", "fin de semana", "oye, ¿qué hora es?", "", "la TV dice Finnip",
+                     "Final de temporada", "fino el vino", "y luego qué"):
             self.assertIsNone(T.after_wake_word(text), text)
 
 
+class RemindersTest(unittest.TestCase):
+    def test_intent(self):
+        self.assertTrue(T.wants_reminders("¿Qué recordatorios tengo?"))
+        self.assertTrue(T.wants_reminders("tengo alguna alarma"))
+        self.assertFalse(T.wants_reminders("ponme un recordatorio a las 8"))
+        self.assertFalse(T.wants_reminders("cancela la alarma"))
+        self.assertFalse(T.wants_reminders("enciende la lámpara"))
+        self.assertTrue(T.wants_reminders("qué eventos tengo en mi calendario"))
+        self.assertFalse(T.wants_reminders("agenda un evento mañana"))
+        self.assertTrue(T.wants_reminders("qué tengo en mi agenda"))
+        self.assertTrue(T.wants_reminders("¿Qué tengo este mes?"))
+        self.assertFalse(T.wants_reminders("mañana tengo dentista, agéndalo"))
+
+    def test_agenda_range(self):
+        now = datetime.fromisoformat("2026-11-11T15:00:00-06:00")  # Wednesday
+        def r(text):
+            label, start, end = T.agenda_range(text, now)
+            return label, start.isoformat(), end.isoformat()
+        self.assertEqual(r("qué eventos tengo"), ("Próximos 7 días", "2026-11-11T15:00:00-06:00", "2026-11-18T15:00:00-06:00"))
+        self.assertEqual(r("los de la semana"), ("Esta semana", "2026-11-11T15:00:00-06:00", "2026-11-16T00:00:00-06:00"))
+        self.assertEqual(r("la próxima semana"), ("Próxima semana", "2026-11-16T00:00:00-06:00", "2026-11-23T00:00:00-06:00"))
+        self.assertEqual(r("los del mes"), ("Este mes", "2026-11-11T15:00:00-06:00", "2026-12-01T00:00:00-06:00"))
+        self.assertEqual(r("el próximo mes"), ("Próximo mes", "2026-12-01T00:00:00-06:00", "2027-01-01T00:00:00-06:00"))
+        self.assertEqual(r("los del año"), ("Este año", "2026-11-11T15:00:00-06:00", "2027-01-01T00:00:00-06:00"))
+        self.assertEqual(r("qué tengo hoy en la mañana"), ("Hoy", "2026-11-11T15:00:00-06:00", "2026-11-12T00:00:00-06:00"))
+        self.assertEqual(r("y mañana"), ("Mañana", "2026-11-12T00:00:00-06:00", "2026-11-13T00:00:00-06:00"))
+
+    def test_calendar_items_in_mexico_time(self):
+        from datetime import datetime
+        now = datetime.fromisoformat("2026-11-09T12:00:00-06:00")
+        events = [
+            {"summary": "Pagar", "start": "2026-11-10T05:30:00+00:00", "all_day": False},
+            {"summary": "Junta", "start": "2026-11-10T08:00:00-06:00", "all_day": False},
+            {"summary": "Viaje", "start": "2026-11-20", "all_day": True},
+            {"start": "2026-11-09", "all_day": True},
+        ]
+        self.assertEqual(T.calendar_items(events, now), [
+            {"name": "Pagar", "when": "Hoy · 23:30", "date": "2026-11-09", "day": "Hoy", "time": "23:30"},
+            {"name": "Junta", "when": "Mañana · 08:00", "date": "2026-11-10", "day": "Mañana", "time": "08:00"},
+            {"name": "Viaje", "when": "vie 20 nov · todo el día", "date": "2026-11-20", "day": "vie 20 nov", "time": ""},
+            {"name": "Sin título", "when": "Hoy · todo el día", "date": "2026-11-09", "day": "Hoy", "time": ""},
+        ])
 if __name__ == "__main__":
     unittest.main()

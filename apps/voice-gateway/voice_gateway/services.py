@@ -40,14 +40,14 @@ class HermesClient:
         self.url = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/") + "/v1/responses"
         self.key = os.environ["API_SERVER_KEY"]
         self.conversation = os.environ.get("HERMES_CONVERSATION", "finnip-voice")
-        self.model = os.environ.get("VOICE_MODEL") or None
+        self.router = None  # ModelRouter, set by create_app
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(10, read=120))
 
     async def stream(self, text):
-        body = {"model": self.model or "hermes", "input": text, "stream": True, "store": True,
+        body = {"model": "hermes", "input": text, "stream": True, "store": True,
                 "conversation": self.conversation, "model_options": {"reasoning": {"enabled": False}}}
-        if self.model:
-            body["provider"] = os.environ.get("VOICE_PROVIDER", "anthropic")
+        if self.router:
+            body["provider"], body["model"] = self.router.route()
         headers = {"Authorization": f"Bearer {self.key}"}
         async with self.http.stream("POST", self.url, json=body, headers=headers) as resp:
             if resp.status_code != 200:
@@ -62,6 +62,32 @@ class HermesClient:
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 
 
+class ICloudCalendar:
+    """Agenda panel: loads the finnip-calendar Hermes plugin (mounted read only) and uses its CalDAV
+    reader, so iCloud is spoken to by one piece of code. Credentials come from the environment."""
+    def __init__(self, path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_calendar", path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+    async def events(self, start, end, limit=100):
+        return await asyncio.to_thread(self.plugin.list_events, start, end, limit)
+class ModelRouter:
+    """Voice side of the finnip-models Hermes plugin (mounted read only), which owns the model orders
+    and the state shared with Telegram ({"use", "normal"} in MODEL_STATE)."""
+    def __init__(self, plugin_path, state_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_models", plugin_path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+        self.state_path = state_path
+    def route(self):
+        return self.plugin.route(self.plugin.load_state(self.state_path))
+    def order(self, text):
+        return self.plugin.model_order(text)
+    async def apply(self, order):
+        """(what to tell the user, (provider, model) or None)."""
+        return await asyncio.to_thread(self.plugin.apply_order, order, self.state_path)
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
@@ -114,16 +140,13 @@ def host_stats(disk_path="/"):
 
 
 class MonitorLight:
-    """Color of the monitors' LED strip through Home Bridge; None while it is off."""
-
+    """Devices through Home Bridge (read only); `id` is the monitors' LED strip that sets the UI color."""
     def __init__(self):
-        self.url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + \
-            "/devices/" + os.environ.get("MONITOR_LIGHT", "light.leds_monitores")
+        self.url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + "/devices"
+        self.id = os.environ.get("MONITOR_LIGHT", "light.leds_monitores")
         self.key = os.environ["BRIDGE_API_KEY"]
         self.http = httpx.AsyncClient(timeout=5)
-
-    async def rgb(self):
+    async def devices(self):
         resp = await self.http.get(self.url, headers={"Authorization": f"Bearer {self.key}"})
         resp.raise_for_status()
-        light = resp.json()
-        return light.get("rgb_color") if light.get("state") == "on" else None
+        return resp.json()["devices"]

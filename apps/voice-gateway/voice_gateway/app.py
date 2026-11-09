@@ -57,9 +57,11 @@ class TailscaleOnly(BaseHTTPMiddleware):
 class Session:
     """One client connection: buffers PCM, runs one reply turn at a time, handles interruptions."""
 
-    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None):
+    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None, router=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
         self.stats = stats        # async () -> host numbers, or None
+        self.calendar = calendar  # ICloudCalendar-like (async events()), or None
+        self.router = router      # ModelRouter-like (route(), order(), async apply()), or None
         self.theme = theme if theme is not None else {}  # shared {"rgb": [r, g, b]} of the monitors
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
@@ -140,6 +142,8 @@ class Session:
             await self.send({"type": "ready", "version": 1})
             if self.theme.get("rgb"):
                 await self.send({"type": "theme", "rgb": self.theme["rgb"]})
+            if (self.theme.get("playing") or {}).get("active"):
+                await self.send(self.theme["playing"])
         elif kind == "utterance_start":
             self.stop_partials()
             self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
@@ -173,10 +177,13 @@ class Session:
         except Exception:
             log.exception("STT failed")
             await self.send({"type": "error", "message": "No pude entender el audio."})
+            await self.send({"type": "done"})  # without it the UI stays in "thinking"
             return
         if data.get("wake"):  # standby: only a phrase that starts with "Finnip" counts
             rest = T.after_wake_word(transcript)
             if rest is None:
+                if transcript:  # to tune the wake word: what the STT wrote when "Finnip" was not found
+                    log.warning("no wake word: %r", transcript[:80])
                 await self.send({"type": "transcript", "text": ""})
                 return
             await self.send({"type": "wake"})
@@ -209,7 +216,16 @@ class Session:
         self.user_text, self.user_at = transcript, now
         self.turn = asyncio.create_task(self.reply(transcript))
 
+    async def model_command(self, user_text):
+        """The spoken answer to "usa Opus" / "el normal sea DeepSeek", or None when it is not one."""
+        order = self.router.order(user_text) if self.router else None
+        if order is None:
+            return None
+        message, _ = await self.router.apply(order)
+        return message
+
     async def reply(self, user_text):
+        local = await self.model_command(user_text)  # answered here, without Hermes
         prompt = T.with_heard_note(user_text, self.pending_heard)
         self.pending_heard, self.sentences, self.spoke = None, [], False
         if self.stats and T.wants_stats(user_text):
@@ -219,6 +235,15 @@ class Session:
                 prompt = T.stats_note(stats, prompt)
             except Exception:
                 log.exception("host stats failed")  # Finnip can still measure them with its tools
+        if self.calendar and T.wants_reminders(user_text):
+            try:
+                label, start, end = T.agenda_range(user_text)
+                items = T.calendar_items(await self.calendar.events(start, end))
+                # On screen before the voice arrives.
+                await self.send({"type": "reminders", "title": label, "items": items})
+                prompt = T.reminders_note(items, prompt, label)
+            except Exception:
+                log.exception("calendar failed")  # Finnip can still list them with its tools
         queue = asyncio.Queue()
         synth = []
 
@@ -231,7 +256,7 @@ class Session:
         async def produce():
             splitter = T.SentenceSplitter()
             try:
-                async for delta in self.hermes.stream(prompt):
+                async for delta in (_once(local) if local is not None else self.hermes.stream(prompt)):
                     for sentence in splitter.feed(delta):
                         enqueue(sentence)
                 for sentence in splitter.flush():
@@ -261,40 +286,67 @@ class Session:
                 task.cancel()
 
 
-THEME_POLL = 1.0  # seconds between reads of the monitors' LED color (local HTTP, cheap)
+async def _once(text):
+    yield text
 
 
-def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None):
+THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action cards (local HTTP, cheap)
+
+
+def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None):
     if stt is None:
-        from .services import EdgeTts, HermesClient, MonitorLight, ParakeetStt, host_stats
+        from .services import EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt, host_stats
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
         disk = os.environ.get("STATIC_DIR") or "/"
         stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
         monitor = MonitorLight() if os.environ.get("BRIDGE_API_KEY") else None
+        plugin = os.environ.get("CALENDAR_PLUGIN", "")
+        calendar = ICloudCalendar(plugin) if plugin and os.path.exists(plugin) and os.environ.get("CALDAV_CALENDAR_URL") else None
+        models_plugin, state = os.environ.get("MODELS_PLUGIN", ""), os.environ.get("MODEL_STATE", "")
+        router = ModelRouter(models_plugin, state) if os.path.exists(models_plugin) and state else None
+        hermes.router = router
 
     recent = {"text": "", "at": 0.0}
-    theme = {}        # last color the monitors had while on: kept when they turn off
+    theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
     sessions = set()
 
+    seen = {}         # device id -> (state, brightness, rgb) from the previous poll
+    async def broadcast(obj):
+        for session in list(sessions):
+            with contextlib.suppress(Exception):
+                await session.send(obj)
     async def follow_monitors():
         while True:
             try:
-                rgb = await monitor.rgb()
-                if rgb and rgb != theme.get("rgb"):
-                    theme["rgb"] = rgb
-                    for session in list(sessions):
-                        with contextlib.suppress(Exception):
-                            await session.send({"type": "theme", "rgb": rgb})
+                for device in await monitor.devices():
+                    if device.get("domain") == "media_player":
+                        playing = T.now_playing(device)
+                        if playing != theme.get("playing"):
+                            theme["playing"] = playing
+                            await broadcast(playing)
+                    on = device.get("state") == "on"
+                    rgb = device.get("rgb_color")
+                    if device["id"] == monitor.id and on and rgb and rgb != theme.get("rgb"):
+                        theme["rgb"] = rgb
+                        await broadcast({"type": "theme", "rgb": rgb})
+                    key = (device.get("state"), device.get("brightness"), rgb)
+                    # A change since the last poll (not the first sight) becomes an action card in the UI.
+                    # ponytail: speakers (media_player) get no card; their on/off card would say "Apagado"
+                    # on every track change. Add a "now playing" card if wanted.
+                    if device["id"] in seen and seen[device["id"]] != key and device.get("domain") != "media_player":
+                        name = "Monitores" if device["id"] == monitor.id else device.get("name", "")
+                        await broadcast({"type": "device", "id": device["id"], "name": name, "on": on,
+                                         "brightness": device.get("brightness"), "rgb": rgb})
+                    seen[device["id"]] = key
             except Exception as err:
-                log.warning("monitor color: %s", err)
+                log.warning("devices: %s", err)
             await asyncio.sleep(THEME_POLL)
-
     async def ws_endpoint(ws):
         if not allowed_user(ws.headers):
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
             return
         await ws.accept()
-        session = Session(ws, stt, hermes, tts, recent, stats, theme)
+        session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router)
         sessions.add(session)
         try:
             await session.run()
@@ -320,4 +372,6 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None):
 
     # gzip: the VAD's onnxruntime wasm goes from ~15 MB to ~4 MB, which matters over a Tailscale relay.
     middleware = [Middleware(TailscaleOnly), Middleware(GZipMiddleware, minimum_size=1024)]
-    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app.state.theme = theme  # shared state, set by tests
+    return app

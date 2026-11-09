@@ -9,17 +9,26 @@ export interface ActionDef<I> {
     data?(input: I): Record<string, unknown>;
     // Device-specific limits a static schema cannot express. Returns the error message.
     check?(input: I, device: Device): string | undefined;
-    // Whether the state read after the command matches what was asked.
-    confirm(input: I, actual: Device): boolean;
+    // Whether the state read after the command matches what was asked (before: the state it started from).
+    confirm(input: I, actual: Device, before: Device): boolean;
 }
 
 const define = <I>(def: ActionDef<I>) => def;
 const noInput = z.object({});
 const percent = z.number().int().min(1).max(100);
 const channel = z.number().int().min(0).max(255);
+const words = z.string().trim().min(1).max(200);
+// Music service named when asking Alexa to play something (linked in the Alexa app).
+const MUSIC_SERVICE = "Apple Music";
+// Alexa can shop by voice. A command for her is text the model wrote, so it may carry an injected
+// order: refuse anything that looks like buying. (Turning off voice purchasing in the Alexa app is the
+// real fix; this is the belt to that braces.)
+const PURCHASE = /(?<![\p{L}\p{N}])(compr|cómpr|orden|ordén|pid|píd|pedir|pedido|buy|order|purchas|checkout)/iu;
 
 export const ACTIONS = {
     on: define({ input: noInput, service: "turn_on", confirm: (_, actual) => actual.state === "on" }),
+    // script.turn_on starts the script without waiting; it may already be "off" when read back.
+    run: define({ input: noInput, service: "turn_on", confirm: () => true }),
     off: define({ input: noInput, service: "turn_off", confirm: (_, actual) => actual.state === "off" }),
     brightness: define({
         input: z.object({ brightness: percent }),
@@ -63,6 +72,32 @@ export const ACTIONS = {
             }
         },
         confirm: (input, actual) => actual.temperature === input.temperature,
+    }),
+    play: define({
+        input: z.object({ query: words }),
+        service: "play_media",
+        // Spoken to Alexa like the user would say it: the APPLE_MUSIC search type read "song by artist"
+        // as a playlist name and failed; Alexa's own language understanding finds songs, artists and playlists.
+        data: (input) => ({ media_content_type: "custom", media_content_id: `reproduce ${input.query} en ${MUSIC_SERVICE}` }),
+        check: (input) => PURCHASE.test(input.query) ? "Purchases through Alexa are not allowed" : undefined,
+        // Already playing: "playing" proves nothing until the song changes (Alexa takes a few seconds).
+        confirm: (_, actual, before) => actual.state === "playing" &&
+            (before.state !== "playing" || actual.media_title !== before.media_title),
+    }),
+    command: define({
+        input: z.object({ text: words }),
+        service: "play_media",
+        data: (input) => ({ media_content_type: "custom", media_content_id: input.text }),
+        check: (input) => PURCHASE.test(input.text) ? "Purchases through Alexa are not allowed" : undefined,
+        confirm: (_, actual) => actual.state !== "unavailable", // Alexa reacts a moment later
+    }),
+    pause: define({ input: noInput, service: "media_pause", confirm: (_, actual) => actual.state !== "playing" }),
+    resume: define({ input: noInput, service: "media_play", confirm: (_, actual) => actual.state === "playing" }),
+    volume: define({
+        input: z.object({ volume: z.number().int().min(0).max(100) }),
+        service: "volume_set",
+        data: (input) => ({ volume_level: input.volume / 100 }),
+        confirm: (input, actual) => actual.volume === input.volume,
     }),
     hvac_mode: define({
         input: z.object({ hvac_mode: z.string().min(1) }),

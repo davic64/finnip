@@ -35,7 +35,7 @@ afterEach(async () => { await app?.close(); app = undefined; });
 
 function setup(options: Partial<Parameters<typeof fakeHomeAssistant>[0]> = {}) {
     const ha = fakeHomeAssistant({ entities: ENTITIES, labeled: LABELED, ...options });
-    app = buildApp({ env, fetchImpl: ha.fetchImpl, logger: false });
+    app = buildApp({ env, fetchImpl: ha.fetchImpl, logger: false, settleMs: 0 });
     return { ha, app };
 }
 
@@ -344,4 +344,122 @@ it.each([
     { ...env, HA_URL: "invalid" }, { ...env, HA_TOKEN: "" }, { ...env, BRIDGE_API_KEY: "short" },
 ])("fails early on invalid configuration", (invalidEnv) => {
     expect(() => buildApp({ env: invalidEnv, logger: false })).toThrow();
+});
+
+describe("modes (Home Assistant scripts)", () => {
+    const MODE = entity("script.modo_estudio", "off", { friendly_name: "Modo estudio" });
+    it("runs a labeled script and nothing else on it", async () => {
+        const { ha, app } = setup({ entities: [MODE, entity("script.borrar_todo", "off")], labeled: ["script.modo_estudio"] });
+        const list = (await app.inject({ method: "GET", url: "/devices", headers })).json();
+        expect(list.devices).toEqual([expect.objectContaining({ id: "script.modo_estudio", domain: "script", capabilities: ["run"] })]);
+        const run = await app.inject({ method: "POST", url: "/devices/script.modo_estudio/run", headers });
+        expect(run.statusCode).toBe(200);
+        expect(ha.serviceCalls().map((call) => [call.path, call.body]))
+            .toEqual([["/api/services/script/turn_on", { entity_id: "script.modo_estudio" }]]);
+        expect((await app.inject({ method: "POST", url: "/devices/script.modo_estudio/off", headers })).statusCode).toBe(400);
+        expect((await app.inject({ method: "POST", url: "/devices/script.borrar_todo/run", headers })).statusCode).toBe(404);
+    });
+});
+
+describe("Alexa speakers", () => {
+    const ECHO = entity("media_player.echo", "idle", { friendly_name: "Echo Dave", volume_level: 0.3 });
+    const alexa = (options: Partial<Parameters<typeof fakeHomeAssistant>[0]> = {}) =>
+        setup({ entities: [ECHO], labeled: ["media_player.echo"], ...options });
+
+    it("lists an Echo with its volume and Alexa capabilities", async () => {
+        const { app } = alexa();
+        const response = await app.inject({ method: "GET", url: "/devices/media_player.echo", headers });
+        expect(response.json()).toMatchObject({
+            domain: "media_player", volume: 30, capabilities: ["play", "command", "pause", "resume", "volume"],
+        });
+    });
+
+    it("plays music from Apple Music and runs a spoken command", async () => {
+        const { ha, app } = alexa();
+        await app.inject({ method: "POST", url: "/devices/media_player.echo/play", headers, payload: { query: "Coldplay" } });
+        await app.inject({
+            method: "POST", url: "/devices/media_player.echo/command", headers,
+            payload: { text: "recuérdame llamar al dentista mañana a las 9" },
+        });
+        const alexaCalls = ha.serviceCalls().filter((call) => call.path.startsWith("/api/services/media_player/"));
+        expect(alexaCalls.map((call) => [call.path, call.body])).toEqual([
+            ["/api/services/media_player/play_media",
+                { entity_id: "media_player.echo", media_content_type: "custom", media_content_id: "reproduce Coldplay en Apple Music" }],
+            ["/api/services/media_player/play_media",
+                { entity_id: "media_player.echo", media_content_type: "custom",
+                    media_content_id: "recuérdame llamar al dentista mañana a las 9" }],
+        ]);
+    });
+
+    it("does not mistake a word like 'rápido' for a purchase", async () => {
+        const { app } = alexa();
+        const response = await app.inject({
+            method: "POST", url: "/devices/media_player.echo/command", headers, payload: { text: "pon algo rápido" },
+        });
+        expect(response.statusCode).toBe(200);
+    });
+
+    it.each(["compra papel de baño", "Cómprame unas pilas", "ordena pizza", "pide un Uber", "buy batteries"])(
+        "refuses a purchase command: %s", async (text) => {
+            const { ha, app } = alexa();
+            const response = await app.inject({
+                method: "POST", url: "/devices/media_player.echo/command", headers, payload: { text },
+            });
+            expect(response.statusCode).toBe(400);
+            expect(ha.serviceCalls()).toEqual([]);
+        });
+
+    it("waits for the new song when something else was already playing", async () => {
+        const old = { ...ECHO, state: "playing", attributes: { ...ECHO.attributes, media_title: "Come Away With Me" } };
+        const { ha, app } = alexa({
+            entities: [old],
+            onService: (_d, service, _b, entities) => {
+                if (service === "update_entity") set(entities, "media_player.echo", "playing", { media_title: "Says" });
+            },
+        });
+        const response = await app.inject({
+            method: "POST", url: "/devices/media_player.echo/play", headers, payload: { query: "Nils Frahm" },
+        });
+        expect(response.json()).toMatchObject({ confirmed: true, actual: { media_title: "Says" } });
+        expect(ha.serviceCalls().some((call) => call.path === "/api/services/homeassistant/update_entity")).toBe(true);
+    });
+
+    it("sets the volume as a 0-1 level and confirms it", async () => {
+        const { ha, app } = alexa({ onService: (_d, _s, _b, entities) => set(entities, "media_player.echo", "idle", { volume_level: 0.5 }) });
+        const response = await app.inject({
+            method: "POST", url: "/devices/media_player.echo/volume", headers, payload: { volume: 50 },
+        });
+        expect(response.json()).toMatchObject({ confirmed: true, actual: { volume: 50 } });
+        expect(ha.serviceCalls()[0]!.body).toEqual({ entity_id: "media_player.echo", volume_level: 0.5 });
+    });
+
+    it("waits for Alexa to report the pause instead of answering with the stale state", async () => {
+        let reads = 0;
+        const ha = fakeHomeAssistant({
+            entities: [{ ...ECHO, state: "playing" }], labeled: ["media_player.echo"],
+            // After the pause the Echo still reports "playing" for a couple of reads, then "paused".
+            fail: (method, path) => method === "GET" && path === "/api/states/media_player.echo" && ++reads > 3
+                ? new Response(JSON.stringify({ ...ECHO, state: "paused" })) : undefined,
+        });
+        app = buildApp({ env, fetchImpl: ha.fetchImpl, logger: false, settleMs: 0 });
+        const response = await app.inject({ method: "POST", url: "/devices/media_player.echo/pause", headers });
+        expect(response.json()).toMatchObject({ confirmed: true, actual: { state: "paused" } });
+        expect(ha.serviceCalls().some((call) => call.path === "/api/services/homeassistant/update_entity")).toBe(true);
+    });
+
+    it("reports what is playing, with https cover art only", async () => {
+        const playing = entity("media_player.echo", "playing", {
+            friendly_name: "Echo Dave", volume_level: 0.1, media_title: "Highway to Hell", media_artist: "AC/DC",
+            media_album_name: "Highway to Hell", entity_picture: "https://is1-ssl.mzstatic.com/x.jpg",
+            media_duration: 208, media_position: 12, media_position_updated_at: "2026-11-09T19:11:40+00:00",
+        });
+        const { app } = alexa({ entities: [playing] });
+        const response = await app.inject({ method: "GET", url: "/devices/media_player.echo", headers });
+        expect(response.json()).toMatchObject({
+            volume: 10, media_title: "Highway to Hell", media_artist: "AC/DC", media_image: "https://is1-ssl.mzstatic.com/x.jpg",
+            media_duration: 208, media_position: 12,
+        });
+        const local = alexa({ entities: [{ ...playing, attributes: { ...playing.attributes, entity_picture: "/api/media_player_proxy/x" } }] });
+        expect((await local.app.inject({ method: "GET", url: "/devices/media_player.echo", headers })).json().media_image).toBeNull();
+    });
 });

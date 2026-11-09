@@ -1,0 +1,3 @@
+name: finnip-calendar
+version: "0.2.0"
+description: Consulta y agenda eventos y recordatorios en el calendario de iCloud del usuario (CalDAV)

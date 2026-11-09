@@ -1,0 +1,3 @@
+name: finnip-models
+version: "0.1.0"
+description: Cambia el modelo de Finnip por voz o Telegram (suscripción de Claude u OpenRouter)

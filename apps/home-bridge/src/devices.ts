@@ -4,7 +4,8 @@ import type { ActionName } from "./actions.js";
 export const DEVICE_LABEL = "finnip";
 
 // Domains Finnip may control. A labeled entity outside this list (lock, alarm…) is ignored.
-export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate"] as const;
+// script: the "modos" (Modo estudio, Modo cine…), edited in Home Assistant and only run from here.
+export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate", "media_player", "script"] as const;
 export type Domain = (typeof ALLOWED_DOMAINS)[number];
 
 export interface Entity {
@@ -27,6 +28,14 @@ export interface Device {
     min_temp?: number | null;
     max_temp?: number | null;
     hvac_modes?: string[];
+    volume?: number | null;
+    media_title?: string | null;
+    media_artist?: string | null;
+    media_album?: string | null;
+    media_image?: string | null;
+    media_duration?: number | null;
+    media_position?: number | null;
+    media_position_at?: string | null;
 }
 
 const ENTITY_ID = /^([a-z_]+)\.[a-z0-9_]+$/;
@@ -37,6 +46,7 @@ export function domainOf(entityId: string): Domain | undefined {
     return ALLOWED_DOMAINS.find((allowed) => allowed === domain);
 }
 
+const text = (value: unknown) => typeof value === "string" && value ? value : null;
 const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
 const strings = (value: unknown) =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -54,6 +64,8 @@ function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): Ac
     switch (domain) {
         case "switch":
             return ["on", "off"];
+        case "script":
+            return ["run"];
         case "light": {
             const modes = strings(attributes.supported_color_modes);
             const capabilities: ActionName[] = ["on", "off"];
@@ -63,6 +75,9 @@ function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): Ac
         }
         case "cover":
             return COVER_FEATURES.filter(([bit]) => features & bit).map(([, name]) => name);
+        case "media_player":
+            // Alexa speakers (Alexa Media Player integration).
+            return ["play", "command", "pause", "resume", "volume"];
         case "climate": {
             const capabilities: ActionName[] = [];
             if (features & CLIMATE_TARGET_TEMPERATURE) capabilities.push("temperature");
@@ -83,6 +98,7 @@ export function toDevice(entity: Entity, domain: Domain): Device {
     };
     switch (domain) {
         case "switch":
+        case "script":
             return base;
         case "light": {
             const rawBrightness = num(attributes.brightness);
@@ -94,6 +110,21 @@ export function toDevice(entity: Entity, domain: Domain): Device {
         }
         case "cover":
             return { ...base, current_position: num(attributes.current_position) };
+        case "media_player": {
+            const level = num(attributes.volume_level);
+            return {
+                ...base,
+                volume: level === null ? null : Math.round(level * 100),
+                media_title: text(attributes.media_title),
+                media_artist: text(attributes.media_artist),
+                media_album: text(attributes.media_album_name),
+                // Cover art: only an https URL (Alexa gives Apple's CDN), never a relative HA path.
+                media_image: text(attributes.entity_picture)?.startsWith("https://") ? attributes.entity_picture as string : null,
+                media_duration: num(attributes.media_duration),
+                media_position: num(attributes.media_position),
+                media_position_at: text(attributes.media_position_updated_at),
+            };
+        }
         case "climate":
             return {
                 ...base,
