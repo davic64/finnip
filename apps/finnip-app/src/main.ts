@@ -6,6 +6,7 @@ import { Holo } from "./holo";
 import { Hud } from "./hud";
 import { showCard } from "./cards";
 import { showAgenda } from "./agenda";
+import { showNowPlaying } from "./nowplaying";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -260,6 +261,9 @@ link.onEvent = (e) => {
       break;
     case "device":
       showCard(e);
+      break;
+    case "now_playing":
+      showNowPlaying(e);
       break;
     case "reminders":
       if (acceptAudio) showAgenda(e);

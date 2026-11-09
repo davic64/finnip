@@ -92,6 +92,88 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.6; }
 .card i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--muted); }
 .card span { text-transform: uppercase; color: var(--muted); }
 .card b { font-weight: 600; color: var(--holo); }
+/* Now playing (nowplaying.ts): top left of the stage, only while a song plays. Rings draw and turn
+   slowly, text slides in; nothing flashes. */
+.np {
+  position: absolute;
+  top: 5%;
+  left: 4%;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  max-width: min(420px, 80vw);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.np.on { opacity: 1; }
+.np-dial { position: relative; flex: none; width: 104px; height: 104px; }
+.np-dial::before {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--holo) 22%, transparent), transparent 70%);
+}
+.np-dial svg { position: relative; width: 100%; height: 100%; overflow: visible; }
+.np-track { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.np-progress {
+  fill: none;
+  stroke: var(--holo);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  filter: drop-shadow(0 0 3px var(--holo));
+  transition: stroke-dashoffset 1s linear;
+}
+.np-spin {
+  fill: none;
+  stroke: color-mix(in srgb, var(--holo) 55%, transparent);
+  stroke-width: 0.8;
+  stroke-dasharray: 1.5 4.5;
+  transform-origin: 50% 50%;
+  animation: np-turn 24s linear infinite;
+}
+@keyframes np-turn { to { transform: rotate(360deg); } }
+.np-disc { fill: color-mix(in srgb, var(--holo) 10%, var(--bg)); }
+.np-text { display: grid; gap: 2px; min-width: 0; }
+.np-kicker { font: 9px var(--mono); letter-spacing: 0.4em; text-transform: uppercase; color: var(--holo); }
+.np-title {
+  font-weight: 300;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 14px color-mix(in srgb, var(--holo) 35%, transparent);
+}
+.np-artist { font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+.np-rule {
+  height: 1px;
+  margin: 6px 0 4px;
+  background: linear-gradient(90deg, var(--holo), transparent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.2s;
+}
+.np.on .np-rule { transform: none; }
+.np-meta { display: flex; gap: 18px; align-items: center; font: 10px var(--mono); color: var(--muted); letter-spacing: 0.1em; }
+.np-vol { display: inline-flex; gap: 6px; align-items: center; letter-spacing: 0.2em; }
+.np-vol i { display: inline-flex; gap: 2px; align-items: flex-end; height: 10px; }
+.np-vol u { width: 3px; background: var(--line); transition: background 0.4s ease; }
+.np-vol u.lit { background: var(--holo); }
+.np-vol b { font-weight: 500; color: var(--holo); letter-spacing: 0.05em; }
+.np-text > * { opacity: 0; transform: translateX(-8px); transition: opacity 0.5s ease, transform 0.5s ease; }
+.np.on .np-text > * { opacity: 1; transform: none; }
+.np.on .np-text > :nth-child(2) { transition-delay: 0.08s; }
+.np.on .np-text > :nth-child(3) { transition-delay: 0.16s; }
+.np.on .np-text > :nth-child(5) { transition-delay: 0.24s; }
+@media (prefers-reduced-motion: reduce) {
+  .np, .np * { transition: none !important; animation: none !important; }
+}
+
 /* Agenda overlay (agenda.ts): takes the hologram's place while it is on screen. Fades and slides only. */
 .holo { transition: opacity 0.6s ease; }
 body.agenda-on .holo { opacity: 0.08; }

@@ -112,6 +112,13 @@ def wants_reminders(text):
 TZ = ZoneInfo("America/Mexico_City")
 DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+def now_playing(device):
+    """Home Bridge speaker -> the UI's now-playing event; active False when nothing is loaded."""
+    active = device.get("state") in ("playing", "paused") and bool(device.get("media_title"))
+    fields = ("media_title", "media_artist", "media_album", "media_image", "volume",
+              "media_duration", "media_position", "media_position_at")
+    return {"type": "now_playing", "active": active, "state": device.get("state"),
+            **{f.removeprefix("media_"): device.get(f) for f in fields}}
 def calendar_items(events, now=None):
     """finnip-calendar events (sorted by start) as [{"name", "when", "date", "day", "time"}] in Mexico City
     time; "when" is for Hermes, the rest lets the UI group by day. "time" is "" for all-day events."""

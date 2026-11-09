@@ -141,6 +141,8 @@ class Session:
             await self.send({"type": "ready", "version": 1})
             if self.theme.get("rgb"):
                 await self.send({"type": "theme", "rgb": self.theme["rgb"]})
+            if (self.theme.get("playing") or {}).get("active"):
+                await self.send(self.theme["playing"])
         elif kind == "utterance_start":
             self.stop_partials()
             self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
@@ -174,6 +176,7 @@ class Session:
         except Exception:
             log.exception("STT failed")
             await self.send({"type": "error", "message": "No pude entender el audio."})
+            await self.send({"type": "done"})  # without it the UI stays in "thinking"
             return
         if data.get("wake"):  # standby: only a phrase that starts with "Finnip" counts
             rest = T.after_wake_word(transcript)
@@ -285,7 +288,7 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         calendar = ICloudCalendar(plugin) if plugin and os.path.exists(plugin) and os.environ.get("CALDAV_CALENDAR_URL") else None
 
     recent = {"text": "", "at": 0.0}
-    theme = {}        # last color the monitors had while on: kept when they turn off
+    theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
     sessions = set()
 
     seen = {}         # device id -> (state, brightness, rgb) from the previous poll
@@ -297,6 +300,11 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         while True:
             try:
                 for device in await monitor.devices():
+                    if device.get("domain") == "media_player":
+                        playing = T.now_playing(device)
+                        if playing != theme.get("playing"):
+                            theme["playing"] = playing
+                            await broadcast(playing)
                     on = device.get("state") == "on"
                     rgb = device.get("rgb_color")
                     if device["id"] == monitor.id and on and rgb and rgb != theme.get("rgb"):
@@ -304,7 +312,9 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
                         await broadcast({"type": "theme", "rgb": rgb})
                     key = (device.get("state"), device.get("brightness"), rgb)
                     # A change since the last poll (not the first sight) becomes an action card in the UI.
-                    if device["id"] in seen and seen[device["id"]] != key:
+                    # ponytail: speakers (media_player) get no card; their on/off card would say "Apagado"
+                    # on every track change. Add a "now playing" card if wanted.
+                    if device["id"] in seen and seen[device["id"]] != key and device.get("domain") != "media_player":
                         name = "Monitores" if device["id"] == monitor.id else device.get("name", "")
                         await broadcast({"type": "device", "id": device["id"], "name": name, "on": on,
                                          "brightness": device.get("brightness"), "rgb": rgb})

@@ -287,23 +287,29 @@ class GatewayTest(unittest.TestCase):
                 self.assertEqual(ws.receive_json(), {"type": "theme", "rgb": [20, 60, 255]})
 
     def test_device_changes_become_action_cards(self):
+        echo = [{"id": "media_player.echo", "domain": "media_player", "state": s, "media_title": "Song", "volume": 20}
+                for s in ("idle", "playing")]
         off = {"id": "light.lampara", "name": "Lámpara", "state": "off"}
         on = {"id": "light.lampara", "name": "Lámpara", "state": "on", "brightness": 10, "rgb_color": [255, 0, 0]}
 
         class FakeMonitor:
             id = "light.leds_monitores"
-            polls = [[off]] * 10  # first sight is not a change, so no card for it
+            polls = [[off, echo[0]]] * 10  # first sight is not a change, so no card for it
 
             async def devices(self):
-                return self.polls.pop(0) if self.polls else [on]
+                return self.polls.pop(0) if self.polls else [echo[1], on]  # the Echo changes too: no card
 
         with mock.patch("voice_gateway.app.THEME_POLL", 0.05), \
                 TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
             with client.websocket_connect("/ws", headers=USER) as ws:
                 ws.send_json({"type": "hello", "client": "pwa", "version": 1})
                 ws.receive_json()
-                self.assertEqual(ws.receive_json(), {"type": "device", "id": "light.lampara", "name": "Lámpara",
-                                                     "on": True, "brightness": 10, "rgb": [255, 0, 0]})
+                got = [ws.receive_json() for _ in range(2)]
+        # The Echo starting a song is a now-playing update, not a device card.
+        self.assertEqual(got[0]["type"], "now_playing")
+        self.assertEqual((got[0]["active"], got[0]["title"], got[0]["volume"]), (True, "Song", 20))
+        self.assertEqual(got[1], {"type": "device", "id": "light.lampara", "name": "Lámpara",
+                                  "on": True, "brightness": 10, "rgb": [255, 0, 0]})
 
 
 if __name__ == "__main__":
