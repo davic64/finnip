@@ -1,3 +1,4 @@
+import difflib
 import json
 import os
 import re
@@ -157,6 +158,73 @@ def handle(params, **kwargs):
         return json.dumps({"success": False, "error": str(error)}, ensure_ascii=False)
 
 
+# Fast path: a short, unambiguous on/off order runs before the model call, so the device reacts in
+# about a second instead of waiting for the LLM. Anything else (timers, "y", numbers, ambiguity)
+# returns None and the model handles the message as usual.
+FAST_VERBS = {
+    "apaga": "off", "apagar": "off", "apague": "off", "apagame": "off",
+    "prende": "on", "prender": "on", "prendeme": "on",
+    "enciende": "on", "encender": "on", "enciendeme": "on",
+}
+ALL_LIGHTS = {"luces", "las luces", "todas las luces"}
+FILLER = {"finnip", "por", "favor", "porfa", "porfavor"}
+ARTICLES = {"el", "la", "los", "las", "de", "del"}
+
+
+def parse_fast_order(message):
+    """'"Apaga todas las luces."' -> ("off", "all"); '"prende la lámpara"' -> ("on", "lampara")."""
+    text = normalize(message).strip('"')
+    words = [w for w in re.sub(r"[^\w ]", " ", text).split() if w not in FILLER]
+    if len(words) < 2 or "?" in text:
+        return None
+    # Local Whisper mishears a letter ("apara" for "apaga"); accept a same-length near miss only,
+    # so other conjugations ("apagaste") stay with the model.
+    same_length = [v for v in FAST_VERBS if len(v) == len(words[0])]
+    verb = difflib.get_close_matches(words[0], same_length, n=1, cutoff=0.8)
+    if not verb:
+        return None
+    words[0] = verb[0]
+    target = " ".join(words[1:])
+    if target in ALL_LIGHTS:
+        return FAST_VERBS[words[0]], "all"
+    target_words = [w for w in words[1:] if w not in ARTICLES]
+    if not target_words or len(target_words) > 3 or any(w.isdigit() for w in target_words):
+        return None
+    return FAST_VERBS[words[0]], " ".join(target_words)
+
+
+def fast_targets(target, devices):
+    """Device ids for a parsed target: every light for "all", else the one device whose name
+    contains every target word. None when nothing or more than one device matches."""
+    if target == "all":
+        ids = [d["id"] for d in devices if d.get("domain") == "light"]
+        return ids or None
+    wanted = set(target.split())
+    ids = [d["id"] for d in devices if wanted <= set(normalize(d.get("name", "")).split())]
+    return ids if len(ids) == 1 else None
+
+
+def fast_path_hook(user_message=None, **kwargs):
+    if not isinstance(user_message, str) or "\n" in user_message.strip():
+        return None
+    order = parse_fast_order(user_message)
+    if order is None:
+        return None
+    action, target = order
+    try:
+        ids = fast_targets(target, call_bridge("GET", "/devices").get("devices", []))
+        if not ids:
+            return None
+        results = {id_: call_bridge("POST", f"/devices/{id_}/{action}") for id_ in ids}
+    except Exception as error:
+        return {"context": f"[finnip fast path] Intenté '{action}' antes de tu turno y falló: {error}. "
+                           "Resuélvelo tú normalmente."}
+    return {"context": (
+        f"[finnip fast path] Esta orden YA se ejecutó antes de tu turno: {action} en {', '.join(ids)}. "
+        f"Respuesta de Home Bridge: {json.dumps(results, ensure_ascii=False)}. "
+        "No vuelvas a llamar finnip_lights por esta orden; solo confirma brevemente al usuario.")}
+
+
 def register(ctx):
     ctx.register_tool(
         name="finnip_lights",
@@ -164,3 +232,4 @@ def register(ctx):
         schema=SCHEMA,
         handler=handle,
     )
+    ctx.register_hook("pre_llm_call", fast_path_hook)
