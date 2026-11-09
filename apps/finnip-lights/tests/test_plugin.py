@@ -104,5 +104,53 @@ class PluginTest(unittest.TestCase):
         self.assertEqual(result, {"success": False, "error": "Home Bridge devolvió HTTP 400: Action not supported by this device"})
 
 
+HOME = {"devices": [
+    {"id": "light.lampara", "name": "Lámpara", "domain": "light"},
+    {"id": "light.leds_monitores", "name": "Mic Enable Leds Monitores", "domain": "light"},
+    {"id": "switch.impresora", "name": "Impresora", "domain": "switch"},
+]}
+
+
+@mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
+class FastPathTest(unittest.TestCase):
+    def hook(self, message):
+        sent = []
+
+        def urlopen(request, timeout):
+            sent.append(request)
+            return FakeResponse(json.dumps(HOME if request.get_method() == "GET" else {"confirmed": True}).encode())
+
+        with mock.patch.object(plugin.urllib.request, "urlopen", urlopen):
+            result = plugin.fast_path_hook(user_message=message, platform="telegram")
+        return result, [r.full_url for r in sent if r.get_method() == "POST"]
+
+    def test_all_lights_skip_switches(self):
+        result, posts = self.hook('"Apaga todas las luces."')
+        self.assertEqual(posts, [f"{plugin.BRIDGE_URL}/devices/light.lampara/off",
+                                 f"{plugin.BRIDGE_URL}/devices/light.leds_monitores/off"])
+        self.assertIn("YA se ejecutó", result["context"])
+
+    def test_single_device_by_name(self):
+        _, posts = self.hook('"Apara las luces."')  # Whisper mishearing of "Apaga"
+        self.assertEqual(len(posts), 2)
+        for message in ('"Prende la lámpara, por favor."', "enciende los leds", '"Finnip, apaga la impresora"'):
+            _, posts = self.hook(message)
+            self.assertEqual(len(posts), 1, message)
+        self.assertEqual(posts, [f"{plugin.BRIDGE_URL}/devices/switch.impresora/off"])
+
+    def test_leaves_anything_else_to_the_model(self):
+        for message in ('"Apaga la lámpara en diez minutos"', '"apaga la lámpara y la impresora"',
+                        '"apaga la luz"', '"no apagues las luces"', '"¿apagaste las luces?"',
+                        '"pon la lámpara al 30"', "apaga la lámpara\nluego dime la hora", None):
+            result, posts = self.hook(message)
+            self.assertIsNone(result, message)
+            self.assertEqual(posts, [], message)
+
+    def test_bridge_failure_hands_back_to_model(self):
+        with mock.patch.object(plugin.urllib.request, "urlopen", side_effect=urllib.error.URLError("x")):
+            result = plugin.fast_path_hook(user_message='"apaga las luces"')
+        self.assertIn("falló", result["context"])
+
+
 if __name__ == "__main__":
     unittest.main()
