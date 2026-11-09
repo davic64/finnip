@@ -92,12 +92,16 @@ export class Holo {
   private spin = 0;
   private scale = 1;
   private clock = new THREE.Clock();
+  private bloom: UnrealBloomPass;
+  private lastRender = 0;
   state: HoloState = "off";
   shrink = false; // true while the stats HUD is on screen
 
   constructor(private canvas: HTMLCanvasElement, private anchor: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    // GPU budget (measured by the user: 60% GPU on an M5 before this): no MSAA (the composer renders to
+    // its own targets anyway), 1x pixels (the glow hides it), bloom at half resolution, throttled loop.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power" });
+    this.renderer.setPixelRatio(1);
     this.scene.background = new THREE.Color(BG);
     this.camera.position.z = 6;
     this.scene.add(this.root);
@@ -146,7 +150,8 @@ export class Holo {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.45, 0.08));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.45, 0.08);
+    this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
     new ResizeObserver(() => this.resize()).observe(anchor);
@@ -168,6 +173,7 @@ export class Holo {
     const h = innerHeight;
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);
+    this.bloom.setSize(w / 2, h / 2); // composer.setSize resets it to full size
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     // Center the hologram on the anchor element and size it to fit inside.
@@ -180,6 +186,11 @@ export class Holo {
 
   /** Call every frame with the voice level (0-1) of whoever is talking. */
   frame(level: number) {
+    // ponytail: fixed per-state frame caps; drop to on-demand rendering if idle still costs too much.
+    const now = performance.now();
+    const idle = this.state === "off";
+    if (now - this.lastRender < (idle ? 50 : 16)) return; // ~20 fps idle, <=60 fps active (ProMotion runs 120)
+    this.lastRender = now;
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const t = this.clock.elapsedTime;
     const s = this.state;

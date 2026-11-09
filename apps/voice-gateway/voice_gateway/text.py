@@ -94,3 +94,24 @@ def stats_note(s, user_text):
             f"{s['disk_total']} GB{temp}, encendido hace {days} días y {rest // 3600} horas. "
             f"La pantalla ya muestra estos números: usa estos datos y no ejecutes comandos para medirlos.]"
             f"\n\n{user_text}")
+
+
+WAKE_WORD = "finnip"
+WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
+# How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
+WAKE_VARIANTS = {"philip", "phillip", "felip", "finip", "finny", "fini"}
+WAKE_TOKEN = re.compile(r"[^\s,.;:¿?¡!]+")
+
+
+# ponytail: fuzzy match on Parakeet's transcript ("Finny", "Cinip", "FinNip"); the lone word is often
+# misheard ("Thing"), so it works best followed by the order. Upgrade: a real wake-word model
+# (Porcupine or a custom openWakeWord) in the browser.
+def after_wake_word(text):
+    """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None."""
+    for i, m in enumerate(WAKE_TOKEN.finditer(text)):
+        word = _norm(m.group()).replace(" ", "")
+        if word in WAKE_VARIANTS or (len(word) >= 4 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.6):
+            return text[m.end():].lstrip(" ,.;:!").strip()
+        if i >= 1 or word not in WAKE_LEADS:
+            return None
+    return None

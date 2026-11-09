@@ -174,6 +174,15 @@ class Session:
             log.exception("STT failed")
             await self.send({"type": "error", "message": "No pude entender el audio."})
             return
+        if data.get("wake"):  # standby: only a phrase that starts with "Finnip" counts
+            rest = T.after_wake_word(transcript)
+            if rest is None:
+                await self.send({"type": "transcript", "text": ""})
+                return
+            await self.send({"type": "wake"})
+            if not rest:
+                return
+            transcript = rest
         barge_in = bool(data.get("barge_in"))
         if barge_in and T.is_echo(transcript, self.sentences):
             await self.send({"type": "resume"})

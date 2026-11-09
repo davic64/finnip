@@ -66,5 +66,24 @@ class StatsIntentTest(unittest.TestCase):
         self.assertFalse(T.wants_stats("¿qué hora es?"))
 
 
+
+class WakeWordTest(unittest.TestCase):
+    def test_parakeet_variants_wake_up(self):
+        # Real Parakeet transcripts of "Finnip, ..." (Edge TTS voices).
+        self.assertEqual(T.after_wake_word("Finny, apaga la lámpara."), "apaga la lámpara.")
+        self.assertEqual(T.after_wake_word("Cinip, apaga la lámpara."), "apaga la lámpara.")
+        self.assertEqual(T.after_wake_word("Finit,¿qué hora es?"), "¿qué hora es?")
+        self.assertEqual(T.after_wake_word("Oye FinNip, pon los monitores en rojo."), "pon los monitores en rojo.")
+        self.assertEqual(T.after_wake_word("Finnip."), "")
+        # The user's own voice, from the gateway log.
+        self.assertEqual(T.after_wake_word("Philip."), "")
+        self.assertEqual(T.after_wake_word("Finip apar la lámpara."), "apar la lámpara.")
+        self.assertEqual(T.after_wake_word("Oye, Finip."), "")
+
+    def test_other_speech_stays_asleep(self):
+        for text in ("apaga la lámpara", "fin de semana", "oye, ¿qué hora es?", "", "la TV dice Finnip"):
+            self.assertIsNone(T.after_wake_word(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()
