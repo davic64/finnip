@@ -128,5 +128,28 @@ class RemindersTest(unittest.TestCase):
             {"name": "Viaje", "when": "vie 20 nov · todo el día", "date": "2026-11-20", "day": "vie 20 nov", "time": ""},
             {"name": "Sin título", "when": "Hoy · todo el día", "date": "2026-11-09", "day": "Hoy", "time": ""},
         ])
+class ModelOrderTest(unittest.TestCase):
+    def test_orders(self):
+        self.assertEqual(T.model_order("Usa Opus."), ("use", "opus"))
+        self.assertEqual(T.model_order("Oye Finnip, usa sonnet"), ("use", "sonnet"))
+        self.assertEqual(T.model_order("usa el normal"), ("use", "normal"))
+        self.assertEqual(T.model_order("Regresa al modelo normal"), ("use", "normal"))
+        self.assertEqual(T.model_order("cambia a Opus"), ("use", "opus"))
+        self.assertEqual(T.model_order("Que el normal sea GLM 5.3"), ("set_normal", "glm 5 3"))
+        self.assertEqual(T.model_order("cambia el modelo normal a DeepSeek"), ("set_normal", "deepseek"))
+        self.assertIsNone(T.model_order("usa la lámpara"))
+        self.assertIsNone(T.model_order("qué modelo usas"))
+
+    def test_pick_model_skips_unasked_variants(self):
+        models = [{"id": "deepseek/deepseek-v4", "created": 1}, {"id": "deepseek/deepseek-v4.1", "created": 3},
+                  {"id": "deepseek/deepseek-v4.1-flash-1017", "created": 4}, {"id": "deepseek/deepseek-v4.1:batch", "created": 5},
+                  {"id": "z-ai/glm-5.3-prime", "created": 2}, {"id": "z-ai/glm-5.3-flashx-legal", "created": 6}]
+        self.assertEqual(T.pick_model("deepseek", models), "deepseek/deepseek-v4.1")
+        self.assertEqual(T.pick_model("deepseek flash", models), "deepseek/deepseek-v4.1-flash-1017")
+        self.assertEqual(T.pick_model("glm 5 3", models), "z-ai/glm-5.3-prime")
+        self.assertIsNone(T.pick_model("llama", models))
+        self.assertEqual(T.model_label("z-ai/glm-5.3-prime"), "GLM 5.3 prime")
+
+
 if __name__ == "__main__":
     unittest.main()

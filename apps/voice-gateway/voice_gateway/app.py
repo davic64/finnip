@@ -57,10 +57,11 @@ class TailscaleOnly(BaseHTTPMiddleware):
 class Session:
     """One client connection: buffers PCM, runs one reply turn at a time, handles interruptions."""
 
-    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None):
+    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None, router=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
         self.stats = stats        # async () -> host numbers, or None
         self.calendar = calendar  # ICloudCalendar-like (async events()), or None
+        self.router = router      # ModelRouter-like (state, set(), async models()), or None
         self.theme = theme if theme is not None else {}  # shared {"rgb": [r, g, b]} of the monitors
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
@@ -213,7 +214,32 @@ class Session:
         self.user_text, self.user_at = transcript, now
         self.turn = asyncio.create_task(self.reply(transcript))
 
+    async def model_command(self, user_text):
+        """The spoken answer to "usa Opus" / "el normal sea DeepSeek", or None when it is not one."""
+        order = T.model_order(user_text) if self.router else None
+        if order is None:
+            return None
+        kind, value = order
+        if kind == "use" and value in T.SUBSCRIPTION:
+            self.router.set(use=value)
+            return f"Listo, señor. Uso {value.capitalize()} de su suscripción."
+        if kind == "use":
+            if not self.router.state.get("normal"):
+                return "Aún no tengo un modelo normal, señor. Dígame cuál, por ejemplo: el normal sea DeepSeek."
+            self.router.set(use="normal")
+            return f"Listo, señor. Uso el modelo normal, {T.model_label(self.router.state['normal'])}."
+        try:
+            picked = T.pick_model(value, await self.router.models())
+        except Exception:
+            log.exception("OpenRouter models")
+            return "No pude consultar los modelos de OpenRouter, señor."
+        if not picked:
+            return f"No encontré «{value}» en OpenRouter, señor."
+        self.router.set(use="normal", normal=picked)
+        return f"Listo, señor. El normal ahora es {T.model_label(picked)}, y ya lo estoy usando."
+
     async def reply(self, user_text):
+        local = await self.model_command(user_text)  # answered here, without Hermes
         prompt = T.with_heard_note(user_text, self.pending_heard)
         self.pending_heard, self.sentences, self.spoke = None, [], False
         if self.stats and T.wants_stats(user_text):
@@ -244,7 +270,7 @@ class Session:
         async def produce():
             splitter = T.SentenceSplitter()
             try:
-                async for delta in self.hermes.stream(prompt):
+                async for delta in (_once(local) if local is not None else self.hermes.stream(prompt)):
                     for sentence in splitter.feed(delta):
                         enqueue(sentence)
                 for sentence in splitter.flush():
@@ -274,18 +300,25 @@ class Session:
                 task.cancel()
 
 
+async def _once(text):
+    yield text
+
+
 THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action cards (local HTTP, cheap)
 
 
-def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None):
+def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None):
     if stt is None:
-        from .services import EdgeTts, HermesClient, ICloudCalendar, MonitorLight, ParakeetStt, host_stats
+        from .services import EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt, host_stats
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
         disk = os.environ.get("STATIC_DIR") or "/"
         stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
         monitor = MonitorLight() if os.environ.get("BRIDGE_API_KEY") else None
         plugin = os.environ.get("CALENDAR_PLUGIN", "")
         calendar = ICloudCalendar(plugin) if plugin and os.path.exists(plugin) and os.environ.get("CALDAV_CALENDAR_URL") else None
+        state = os.environ.get("MODEL_STATE", "")
+        router = ModelRouter(state) if state and os.path.isdir(os.path.dirname(state)) else None
+        hermes.router = router
 
     recent = {"text": "", "at": 0.0}
     theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
@@ -327,7 +360,7 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
             return
         await ws.accept()
-        session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar)
+        session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router)
         sessions.add(session)
         try:
             await session.run()

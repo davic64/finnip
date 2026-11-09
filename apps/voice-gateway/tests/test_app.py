@@ -312,5 +312,27 @@ class GatewayTest(unittest.TestCase):
                                   "on": True, "brightness": 10, "rgb": [255, 0, 0]})
 
 
+    def test_model_orders_are_answered_without_hermes_and_saved(self):
+        import tempfile
+        from voice_gateway.services import ModelRouter
+        with tempfile.TemporaryDirectory() as tmp:
+            router = ModelRouter(os.path.join(tmp, "model.json"))
+
+            async def models():
+                return [{"id": "z-ai/glm-5.3-prime", "created": 2}]
+            router.models = models
+            client = TestClient(create_app(self.stt, self.hermes, FakeTts(), router=router))
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                self.say(ws, "usa opus")
+                got = self.receive_until(ws, "done")
+                spoken = " ".join(m["text"] for m in got if isinstance(m, dict) and m["type"] == "reply_text")
+                self.assertIn("Opus de su suscripción", spoken)
+                self.assertEqual(router.route(), ("anthropic", "claude-opus-5-5"))
+                self.say(ws, "que el normal sea glm")
+                self.receive_until(ws, "done")
+            self.assertEqual(self.hermes.prompts, [])  # never reached Hermes
+            self.assertEqual(ModelRouter(os.path.join(tmp, "model.json")).route(), ("openrouter", "z-ai/glm-5.3-prime"))
+
+
 if __name__ == "__main__":
     unittest.main()

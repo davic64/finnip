@@ -40,14 +40,14 @@ class HermesClient:
         self.url = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/") + "/v1/responses"
         self.key = os.environ["API_SERVER_KEY"]
         self.conversation = os.environ.get("HERMES_CONVERSATION", "finnip-voice")
-        self.model = os.environ.get("VOICE_MODEL") or None
+        self.router = None  # ModelRouter, set by create_app
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(10, read=120))
 
     async def stream(self, text):
-        body = {"model": self.model or "hermes", "input": text, "stream": True, "store": True,
+        body = {"model": "hermes", "input": text, "stream": True, "store": True,
                 "conversation": self.conversation, "model_options": {"reasoning": {"enabled": False}}}
-        if self.model:
-            body["provider"] = os.environ.get("VOICE_PROVIDER", "anthropic")
+        if self.router:
+            body["provider"], body["model"] = self.router.route()
         headers = {"Authorization": f"Bearer {self.key}"}
         async with self.http.stream("POST", self.url, json=body, headers=headers) as resp:
             if resp.status_code != 200:
@@ -72,6 +72,33 @@ class ICloudCalendar:
         spec.loader.exec_module(self.plugin)
     async def events(self, start, end, limit=100):
         return await asyncio.to_thread(self.plugin.list_events, start, end, limit)
+class ModelRouter:
+    """Which model answers voice turns, kept in a small JSON file so it survives restarts:
+    {"use": "opus" | "sonnet" | "normal", "normal": "<OpenRouter model id>"}."""
+    def __init__(self, path):
+        self.path = path
+        try:
+            with open(path) as f:
+                self.state = json.load(f)
+        except (OSError, ValueError):
+            self.state = {"use": "sonnet", "normal": ""}  # what Finnip used before this existed
+        self.http = httpx.AsyncClient(timeout=15)
+    def route(self):
+        from .text import SUBSCRIPTION
+        use, normal = self.state.get("use"), self.state.get("normal")
+        if use == "normal" and normal:
+            return "openrouter", normal
+        return "anthropic", SUBSCRIPTION.get(use, SUBSCRIPTION["sonnet"])
+    def set(self, **changes):
+        self.state.update(changes)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.state, f)
+        os.replace(tmp, self.path)
+    async def models(self):
+        resp = await self.http.get("https://openrouter.ai/api/v1/models")
+        resp.raise_for_status()
+        return resp.json()["data"]
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
