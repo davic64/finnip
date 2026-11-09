@@ -1,3 +1,5 @@
+import type { Stats } from "./hud";
+
 // WebSocket /ws client (protocol in openspec design.md, decisión 6). Reconnects on its own.
 export type ServerEvent =
   | { type: "ready"; version: number }
@@ -6,6 +8,8 @@ export type ServerEvent =
   | { type: "reply_text"; seq: number; text: string }
   | { type: "audio"; seq: number; format: string }
   | { type: "resume" }
+  | { type: "theme"; rgb: [number, number, number] }
+  | ({ type: "stats" } & Stats)
   | { type: "done" }
   | { type: "error"; message: string };
 

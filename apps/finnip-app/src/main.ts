@@ -2,6 +2,11 @@ import "./style.css";
 import { Link } from "./link";
 import { Mic } from "./mic";
 import { Player } from "./player";
+import { Holo } from "./holo";
+import { Hud } from "./hud";
+import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
+
+createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
 
 type Mode = "conversation" | "single";
 type State = "off" | "listening" | "thinking" | "speaking";
@@ -11,9 +16,40 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const orb = $<HTMLButtonElement>("orb");
 const statusEl = $("status");
 const power = $<HTMLButtonElement>("power");
-const log = $("log");
 const metricsEl = $("metrics");
 const net = $("net");
+const hud = new Hud($("hud"));
+let holo: Holo | null = null;
+try {
+  holo = new Holo($<HTMLCanvasElement>("holo"), $("orb"));
+} catch (err) {
+  console.error("sin WebGL", err); // the orb button still works, just without the hologram
+}
+
+// Hologram color = the monitors' LED color (sent by the server; remembered while they are off).
+function setTheme(rgb: [number, number, number]) {
+  holo?.setColor(rgb);
+  const [h, s, l] = rgbToHsl(rgb);
+  document.documentElement.style.setProperty("--holo", `hsl(${h} ${s}% ${Math.max(l, 45)}%)`);
+  try {
+    localStorage.setItem("finnip.theme", JSON.stringify(rgb));
+  } catch {}
+}
+function rgbToHsl([r, g, b]: number[]): [number, number, number] {
+  [r, g, b] = [r / 255, g / 255, b / 255];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (!d) return [0, 0, Math.round(l * 100)];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [Math.round((h * 60 + 360) % 360), Math.round(s * 100), Math.round(l * 100)];
+}
+try {
+  const saved = JSON.parse(localStorage.getItem("finnip.theme") || "null");
+  if (saved) setTheme(saved);
+} catch {}
 
 const settings = { bargeIn: true, metrics: false };
 try {
@@ -34,7 +70,6 @@ let speechLevel = 0;
 let acceptAudio = true;
 let bargeTimer = 0;
 let bargePlayed: { played_seq: number; played_ms: number } | null = null;
-let finnipBubble: HTMLElement | null = null;
 const t = { end: 0, transcript: 0, firstAudio: 0 };
 
 const STATUS: Record<State, string> = {
@@ -47,6 +82,7 @@ const STATUS: Record<State, string> = {
 function setState(next: State) {
   state = next;
   document.body.dataset.state = next;
+  if (next === "listening" || next === "off") hud.hide(1200); // stats live only while Finnip talks
   statusEl.textContent = !link.online ? "Sin conexión con Finnip" : STATUS[next];
   power.hidden = !(mode === "conversation" && mic.isOpen);
   orb.setAttribute("aria-pressed", String(mic.isOpen));
@@ -69,16 +105,6 @@ function getPlayer() {
   return player;
 }
 
-function bubble(who: "user" | "finnip", text: string) {
-  const el = document.createElement("p");
-  el.className = `bubble ${who}`;
-  el.textContent = text;
-  log.append(el);
-  while (log.children.length > 12) log.firstElementChild!.remove();
-  log.scrollTop = log.scrollHeight;
-  return el;
-}
-
 function showMetrics() {
   metricsEl.hidden = !settings.metrics;
   if (!t.end) return;
@@ -91,20 +117,11 @@ function showMetrics() {
 const PRE_SPEECH_FRAMES = 10; // Silero v5 frames are 32 ms
 const preSpeech: Float32Array[] = [];
 let streaming = false;
-let liveBubble: HTMLElement | null = null;
-let lastUserBubble: HTMLElement | null = null;
-
-function endLiveBubble(remove: boolean) {
-  if (remove) liveBubble?.remove();
-  else liveBubble?.classList.remove("partial");
-  liveBubble = null;
-}
 
 function abortUtterance() {
   if (!streaming) return;
   streaming = false;
   link.send({ type: "utterance_abort" });
-  endLiveBubble(true);
 }
 
 function finishUtterance(extra: object = {}) {
@@ -127,18 +144,12 @@ const handlers = {
     streaming = true;
     link.send({ type: "utterance_start" });
     preSpeech.splice(0).forEach((f) => link.sendFrame(f));
-    if (!finnipTalking) {
-      liveBubble = bubble("user", "…");
-      liveBubble.classList.add("partial");
-      return;
-    }
+    if (!finnipTalking) return;
     clearTimeout(bargeTimer);
     bargeTimer = window.setTimeout(() => {
       bargePlayed = player!.played();
       void player!.pause();
       statusEl.textContent = "Te escucho";
-      liveBubble = bubble("user", "…");
-      liveBubble.classList.add("partial");
     }, BARGE_IN_MS);
   },
   onMisfire() {
@@ -236,10 +247,6 @@ link.onStatus = (online) => {
 
 link.onEvent = (e) => {
   switch (e.type) {
-    case "partial":
-      if (liveBubble) liveBubble.textContent = e.text;
-      log.scrollTop = log.scrollHeight;
-      break;
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
@@ -247,27 +254,11 @@ link.onEvent = (e) => {
         bargePlayed = null;
         player?.flush();
       }
-      if (!e.text) {
-        endLiveBubble(true);
-        return setState(restingState());
-      }
+      if (!e.text) return setState(player?.isSpeaking ? "speaking" : restingState()); // noise: a running reply goes on
       acceptAudio = true;
-      // A continuation after a pause comes back merged with the previous phrase: show one bubble.
-      if (e.merged && lastUserBubble !== liveBubble) lastUserBubble?.remove();
-      if (liveBubble) liveBubble.textContent = e.text;
-      else liveBubble = bubble("user", e.text);
-      lastUserBubble = liveBubble;
-      endLiveBubble(false);
-      finnipBubble = null;
       setState("thinking");
       break;
-    case "reply_text":
-      if (!acceptAudio) return;
-      finnipBubble ??= bubble("finnip", "");
-      finnipBubble.textContent = `${finnipBubble.textContent} ${e.text}`.trim();
-      break;
     case "resume":
-      endLiveBubble(true);
       bargePlayed = null;
       void player?.resume();
       setState("speaking");
@@ -276,8 +267,14 @@ link.onEvent = (e) => {
       if (state === "thinking" && !player?.isSpeaking) setState(restingState());
       player?.endOfReply();
       break;
+    case "theme":
+      setTheme(e.rgb);
+      break;
+    case "stats":
+      if (acceptAudio) hud.show(e);
+      break;
     case "error":
-      bubble("finnip", e.message).classList.add("error");
+      statusEl.textContent = e.message;
       break;
   }
 };
@@ -303,9 +300,28 @@ const levels = new Uint8Array(128);
   } else if (state === "listening") {
     level = speechLevel;
   }
-  orb.style.setProperty("--level", level.toFixed(3));
+  if (holo) {
+    holo.state = state;
+    holo.shrink = hud.on;
+    holo.frame(level);
+  }
   requestAnimationFrame(animate);
 })();
+
+const clock = $("clock");
+setInterval(() => (clock.textContent = new Date().toLocaleTimeString("es-MX", { hour12: false })), 1000);
+
+// Fullscreen (iPhone Safari has no Fullscreen API: there, "Agregar a inicio" already opens full screen).
+const fullBtn = $<HTMLButtonElement>("fullscreen");
+fullBtn.hidden = !document.fullscreenEnabled;
+fullBtn.addEventListener("click", () =>
+  document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(),
+);
+document.addEventListener("fullscreenchange", () => {
+  fullBtn.replaceChildren(Object.assign(document.createElement("i"), { dataset: { lucide: "" } }));
+  fullBtn.firstElementChild!.setAttribute("data-lucide", document.fullscreenElement ? "minimize" : "maximize");
+  createIcons({ icons: { Maximize, Minimize }, root: fullBtn });
+});
 
 // Settings
 const dialog = $<HTMLDialogElement>("settings");
