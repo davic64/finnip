@@ -54,6 +54,9 @@ export class Mic {
   /** Silence the mic track while Finnip talks, so its own voice never comes back as the user's. */
   setMuted(muted: boolean) {
     this.stream?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+    // A muted mic only feeds silence: pause the VAD model too (it ran ~31 inferences/s for nothing).
+    // pauseStream is a no-op above, so the stream and its permission stay open.
+    void (muted ? this.vad?.pause() : this.vad?.start());
   }
 
   /** Warm the HTTP cache so the first tap does not wait for the ~4 MB VAD runtime. */

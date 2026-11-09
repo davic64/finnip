@@ -184,7 +184,7 @@ export class Holo {
     // ponytail: fixed per-state frame caps; drop to on-demand rendering if idle still costs too much.
     const now = performance.now();
     const idle = this.state === "off";
-    const cap = idle ? 50 : this.state === "listening" ? 33 : 16; // ~20 fps idle, ~30 fps listening, <=60 fps thinking/speaking
+    const cap = idle ? 50 : 33; // ~20 fps idle, ~30 fps active (listening, thinking, speaking)
     if (now - this.lastRender < cap) return; // ProMotion runs rAF at 120
     this.lastRender = now;
     const dt = Math.min(this.clock.getDelta(), 0.05);
