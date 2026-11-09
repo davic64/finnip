@@ -32,8 +32,8 @@ export class Mic {
       model: "v5",
       baseAssetPath: "/vad/",
       onnxWASMBasePath: "/vad/",
-      positiveSpeechThreshold: 0.6,
-      negativeSpeechThreshold: 0.45,
+      positiveSpeechThreshold: 0.5, // 0.6 missed a soft "Finnip"; the server filters the extra noise
+      negativeSpeechThreshold: 0.35,
       redemptionMs: 600, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
       minSpeechMs: 250,
       preSpeechPadMs: 300,

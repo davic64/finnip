@@ -100,7 +100,13 @@ function setState(next: State) {
   orb.setAttribute("aria-pressed", String(mic.isOpen));
 }
 
-const restingState = (): State => (!mic.isOpen ? "off" : asleep ? "standby" : "listening");
+// While the Echo plays, every turn ends in standby: the song's lyrics must not talk to Finnip.
+// "Finnip, …" or a tap wakes it up as usual.
+let musicOn = false;
+function restingState(): State {
+  if (mic.isOpen && musicOn && mode === "conversation") asleep = true;
+  return !mic.isOpen ? "off" : asleep ? "standby" : "listening";
+}
 
 function getPlayer() {
   if (!player) {
@@ -264,6 +270,8 @@ link.onEvent = (e) => {
       break;
     case "now_playing":
       showNowPlaying(e);
+      musicOn = e.active && e.state === "playing";
+      if (musicOn && state === "listening" && !streaming) setState(restingState());
       break;
     case "reminders":
       if (acceptAudio) showAgenda(e);
