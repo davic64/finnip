@@ -147,8 +147,8 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8765
 `Tailscale-User-Login` que pone `tailscale serve`. Habla con Hermes por su API
 server (`API_SERVER_HOST=0.0.0.0` en la red interna de Compose, sin puerto
 publicado). El protocolo de `/ws`, que también usará el ESP32, está en
-`openspec/changes/add-voice-interface/design.md`; `apps/voice-gateway/tools/ws_client.py`
-es un cliente de referencia que mide la latencia.
+`apps/voice-gateway/voice_gateway/app.py` (`Session.on_control`);
+`apps/voice-gateway/tools/ws_client.py` es un cliente de referencia que mide la latencia.
 
 Desplegar cambios:
 

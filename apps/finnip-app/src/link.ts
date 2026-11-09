@@ -1,6 +1,6 @@
 import type { Stats } from "./hud";
 
-// WebSocket /ws client (protocol in openspec design.md, decisión 6). Reconnects on its own.
+// WebSocket /ws client (server side: voice-gateway Session). Reconnects on its own.
 export type ServerEvent =
   | { type: "ready"; version: number }
   | { type: "partial"; text: string }
