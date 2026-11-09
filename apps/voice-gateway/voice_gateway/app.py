@@ -4,10 +4,12 @@ import contextlib
 import json
 import logging
 import os
+import time
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
@@ -17,6 +19,11 @@ from . import text as T
 log = logging.getLogger("voice_gateway")
 MAX_UTTERANCE_BYTES = 16000 * 2 * 60  # 60 s of PCM16 mono 16 kHz
 GENERIC_ERROR = "No pude completar la respuesta."
+# ponytail: live partials re-transcribe the whole utterance each time (O(n²) CPU on long phrases);
+# switch to a streaming STT if phrases get long or the CPU saturates.
+PARTIAL_EVERY = 0.5          # seconds between live transcripts
+PARTIAL_MIN_BYTES = 16000    # 0.5 s of new audio before another partial
+DUPLICATE_WINDOW = 5.0       # seconds in which an identical transcript is dropped
 
 
 def allowed_user(headers):
@@ -40,6 +47,8 @@ class Session:
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
         self.listening = None     # task transcribing the last utterance
+        self.partials = None      # task sending live transcripts while the user speaks
+        self.last_text, self.last_at = "", 0.0
         self.sentences = []       # current reply, index == audio seq
         self.pending_heard = None
         self.lock = asyncio.Lock()
@@ -62,15 +71,40 @@ class Session:
                     continue
                 await self.on_control(json.loads(msg.get("text") or "{}"))
         finally:
-            for task in (self.listening, self.turn):
+            for task in (self.listening, self.turn, self.partials):
                 if task:
                     task.cancel()
+
+    def stop_partials(self):
+        if self.partials:
+            self.partials.cancel()
+            self.partials = None
+
+    async def live_partials(self):
+        sent = 0
+        while True:
+            await asyncio.sleep(PARTIAL_EVERY)
+            size = len(self.audio)
+            if size < PARTIAL_MIN_BYTES or size - sent < PARTIAL_MIN_BYTES:
+                continue
+            sent = size
+            text = await self.stt.transcribe(bytes(self.audio))
+            if text:
+                await self.send({"type": "partial", "text": text})
 
     async def on_control(self, data):
         kind = data.get("type")
         if kind == "hello":
             await self.send({"type": "ready", "version": 1})
+        elif kind == "utterance_start":
+            self.stop_partials()
+            self.audio = bytearray()
+            self.partials = asyncio.create_task(self.live_partials())
+        elif kind == "utterance_abort":
+            self.stop_partials()
+            self.audio = bytearray()
         elif kind == "utterance_end":
+            self.stop_partials()
             audio, self.audio = bytes(self.audio), bytearray()
             self.listening = asyncio.create_task(self.on_utterance(audio, data))
         elif kind in ("cancel", "interrupt"):
@@ -98,6 +132,11 @@ class Session:
         if barge_in and T.is_echo(transcript, self.sentences):
             await self.send({"type": "resume"})
             return
+        now = time.monotonic()
+        if transcript and transcript == self.last_text and now - self.last_at < DUPLICATE_WINDOW:
+            await self.send({"type": "done"})  # same phrase again (duplicated client), Hermes would queue it
+            return
+        self.last_text, self.last_at = transcript, now
         await self.stop_turn(data if barge_in else None)
         await self.send({"type": "transcript", "text": transcript})
         if not transcript:
@@ -175,4 +214,6 @@ def create_app(stt=None, hermes=None, tts=None):
             await asyncio.to_thread(stt.load)
         yield
 
-    return Starlette(routes=routes, middleware=[Middleware(TailscaleOnly)], lifespan=lifespan)
+    # gzip: the VAD's onnxruntime wasm goes from ~15 MB to ~4 MB, which matters over a Tailscale relay.
+    middleware = [Middleware(TailscaleOnly), Middleware(GZipMiddleware, minimum_size=1024)]
+    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)

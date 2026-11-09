@@ -9,6 +9,7 @@ export type MicHandlers = {
   onSpeechEnd: (audio: Float32Array) => void;
   onMisfire: () => void;
   onLevel: (speechProbability: number) => void;
+  onFrame: (frame: Float32Array) => void;
 };
 
 export class Mic {
@@ -19,8 +20,14 @@ export class Mic {
     return this.vad !== null;
   }
 
-  async open(h: MicHandlers) {
+  /** Asks for the mic first (inside the tap, so the prompt shows at once), then loads the VAD. */
+  async open(h: MicHandlers, onPermission: () => void = () => {}) {
     if (this.vad) return;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    onPermission();
+    const stream = this.stream;
     this.vad = await MicVAD.new({
       model: "v5",
       baseAssetPath: "/vad/",
@@ -30,20 +37,24 @@ export class Mic {
       redemptionMs: 550, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
       minSpeechMs: 250,
       preSpeechPadMs: 300,
-      getStream: async () => {
-        this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
-        return this.stream;
-      },
+      getStream: async () => stream,
       pauseStream: async () => {},
       resumeStream: async (s) => s,
       onSpeechStart: h.onSpeechStart,
       onSpeechEnd: h.onSpeechEnd,
       onVADMisfire: h.onMisfire,
-      onFrameProcessed: (p) => h.onLevel(p.isSpeech),
+      onFrameProcessed: (p, frame) => {
+        h.onLevel(p.isSpeech);
+        h.onFrame(frame);
+      },
       startOnLoad: true,
     });
+  }
+
+  /** Warm the HTTP cache so the first tap does not wait for the ~4 MB VAD runtime. */
+  static preload() {
+    for (const f of ["silero_vad_v5.onnx", "ort-wasm-simd-threaded.wasm", "ort-wasm-simd-threaded.mjs", "vad.worklet.bundle.min.js"])
+      void fetch(`/vad/${f}`).catch(() => {});
   }
 
   async close() {

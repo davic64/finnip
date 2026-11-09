@@ -30,7 +30,7 @@ El porqué está en proposal.md, y los requisitos en `specs/voice-interface/spec
 **Non-Goals:**
 
 - Palabra de activación.
-- STT con resultados parciales en streaming. Se transcribe cada frase completa al cerrarla el VAD.
+- Un modelo de STT con streaming nativo. Los parciales se obtienen retranscribiendo el audio acumulado (decisión 4).
 - Firmware del ESP32.
 
 ## Decisions
@@ -72,8 +72,13 @@ La síntesis de la frase N+1 corre mientras suena la N. El cliente reproduce los
 
 ### 4. VAD en el cliente y STT por frase en el servidor
 
-- La PWA detecta voz con `@ricky0123/vad-web` (Silero en el navegador) y envía PCM16 mono de 16 kHz mientras hay voz.
-- Al detectar el final de la frase manda `utterance_end`, y el servidor transcribe ese bloque con faster-whisper (`language: es`, `vad_filter`, el mismo `initial_prompt` que Hermes).
+- La PWA detecta voz con `@ricky0123/vad-web` (Silero v5 en el navegador).
+- Al empezar la voz manda `utterance_start`, los ~300 ms previos (para no perder la primera sílaba) y luego cada frame PCM16 mono de 16 kHz **en vivo**, mientras el usuario habla.
+- **Transcripción en vivo:** mientras llega audio, el servidor retranscribe lo acumulado cada ~0.5 s (si hay al menos 0.5 s nuevos) y envía `partial`. La PWA lo muestra como texto que se va escribiendo.
+- Al detectar el final manda `utterance_end` y el servidor hace la transcripción final con faster-whisper (`language: es`, `vad_filter`, el mismo `initial_prompt` que Hermes). Si el VAD descarta el segmento (ruido corto), la PWA manda `utterance_abort` y el servidor lo tira.
+- **Costo:** cada parcial retranscribe todo el audio acumulado, así que el CPU crece con frases largas. Para frases de voz normales (menos de 10 s) es aceptable en el EliteBook.
+- **Protección contra duplicados:** el servidor ignora una transcripción idéntica a la anterior si llega en menos de 5 s. Evita que Hermes encole repeticiones, como pasó en la primera prueba, cuando varios toques crearon varios detectores en la PWA.
+- **Permiso primero:** la PWA pide el micrófono en el mismo toque, antes de cargar el detector (~4 MB con gzip), y lo precarga al abrir la página.
 - **Por qué en el cliente:** solo sube audio con voz, y el ESP32 puede usar su propio VAD o un botón con el mismo protocolo.
 
 ### 5. Modos de micrófono
@@ -89,6 +94,8 @@ Es el mismo para la PWA y para el ESP32.
 **Del cliente al servidor:**
 - Mensajes JSON de control:
   - `{"type":"hello","client":"pwa|esp32","version":1}`
+  - `{"type":"utterance_start"}` (opcional): reinicia el búfer y activa los parciales. Un cliente simple, como el ESP32, puede omitirlo y mandar el audio seguido de `utterance_end`.
+  - `{"type":"utterance_abort"}`: descarta el audio recibido desde `utterance_start`.
   - `{"type":"utterance_end"}`; en una interrupción por voz lleva además `"barge_in":true,"played_seq":n,"played_ms":m`.
   - `{"type":"cancel"}`
   - `{"type":"interrupt","played_seq":n,"played_ms":m}`, para la interrupción con un toque.
@@ -96,7 +103,8 @@ Es el mismo para la PWA y para el ESP32.
 
 **Del servidor al cliente:**
 - JSON `{"type":"ready","version":1}`, como respuesta a `hello`.
-- JSON `{"type":"transcript","text":...}`. Si el texto viene vacío, era silencio.
+- JSON `{"type":"partial","text":...}`: transcripción provisional mientras el usuario habla.
+- JSON `{"type":"transcript","text":...}`: la transcripción final. Si el texto viene vacío, era silencio.
 - JSON `{"type":"reply_text","seq":n,"text":...}`, por frase.
 - Frames binarios con el audio de cada frase, precedidos de `{"type":"audio","seq":n,"format":"mp3"}`.
 - JSON `{"type":"resume"}`: la interrupción por voz era eco y el cliente debe reanudar el audio pausado.

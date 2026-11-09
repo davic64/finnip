@@ -120,6 +120,38 @@ class GatewayTest(unittest.TestCase):
         self.assertIn({"type": "reply_text", "seq": 0, "text": "Listo, señor."}, got)
         self.assertIn('solo alcanzó a oír: "Hoy…"', self.hermes.prompts[1])
 
+    @mock.patch("voice_gateway.app.PARTIAL_EVERY", 0.01)
+    @mock.patch("voice_gateway.app.PARTIAL_MIN_BYTES", 1)
+    def test_live_partials_while_speaking(self):
+        self.hermes.replies.append((["Bien, señor."], False))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            ws.send_json({"type": "utterance_start"})
+            ws.send_bytes("qué onda".encode())
+            self.assertEqual(ws.receive_json(), {"type": "partial", "text": "qué onda"})
+            ws.send_bytes(" cómo estás".encode())
+            self.assertEqual(ws.receive_json(), {"type": "partial", "text": "qué onda cómo estás"})
+            ws.send_json({"type": "utterance_end"})
+            got = self.receive_until(ws, "done")
+        self.assertEqual(got[0], {"type": "transcript", "text": "qué onda cómo estás"})
+        self.assertEqual(self.hermes.prompts, ["qué onda cómo estás"])
+
+    def test_identical_phrase_right_after_is_dropped(self):
+        self.hermes.replies.append((["Bien."], False))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "qué onda")
+            self.receive_until(ws, "done")
+            self.say(ws, "qué onda")
+            self.assertEqual(ws.receive_json(), {"type": "done"})
+        self.assertEqual(self.hermes.prompts, ["qué onda"])
+
+    def test_aborted_utterance_is_dropped(self):
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            ws.send_json({"type": "utterance_start"})
+            ws.send_bytes(b"tos")
+            ws.send_json({"type": "utterance_abort"})
+            ws.send_json({"type": "utterance_end"})
+            self.assertEqual(self.receive_until(ws, "done"), [{"type": "transcript", "text": ""}, {"type": "done"}])
+
     def test_silence_gives_empty_transcript_and_done(self):
         with self.client.websocket_connect("/ws", headers=USER) as ws:
             ws.send_json({"type": "utterance_end"})

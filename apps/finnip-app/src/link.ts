@@ -1,6 +1,7 @@
 // WebSocket /ws client (protocol in openspec design.md, decisión 6). Reconnects on its own.
 export type ServerEvent =
   | { type: "ready"; version: number }
+  | { type: "partial"; text: string }
   | { type: "transcript"; text: string }
   | { type: "reply_text"; seq: number; text: string }
   | { type: "audio"; seq: number; format: string }
@@ -52,15 +53,11 @@ export class Link {
     if (this.online) this.ws!.send(JSON.stringify(obj));
   }
 
-  /** One utterance: PCM16 LE mono 16 kHz, then utterance_end with any extra fields (barge_in...). */
-  sendUtterance(audio: Float32Array, extra: object = {}) {
-    if (!this.online) return false;
-    const pcm = new Int16Array(audio.length);
-    for (let i = 0; i < audio.length; i++) pcm[i] = Math.max(-1, Math.min(1, audio[i])) * 0x7fff;
-    const chunk = 16000 * 2; // 1 s per frame keeps frames small for the ESP32-style server buffer
-    const bytes = new Uint8Array(pcm.buffer);
-    for (let i = 0; i < bytes.length; i += chunk) this.ws!.send(bytes.slice(i, i + chunk));
-    this.ws!.send(JSON.stringify({ type: "utterance_end", ...extra }));
-    return true;
+  /** One live audio frame: Float32 [-1, 1] at 16 kHz, sent as PCM16 LE. */
+  sendFrame(frame: Float32Array) {
+    if (!this.online) return;
+    const pcm = new Int16Array(frame.length);
+    for (let i = 0; i < frame.length; i++) pcm[i] = Math.max(-1, Math.min(1, frame[i])) * 0x7fff;
+    this.ws!.send(pcm.buffer);
   }
 }

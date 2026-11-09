@@ -80,8 +80,29 @@ function showMetrics() {
   metricsEl.textContent = `transcripción ${ms(t.transcript)} · primer audio ${ms(t.firstAudio)}`;
 }
 
-function sendUtterance(audio: Float32Array, extra: object = {}) {
-  if (!link.sendUtterance(audio, extra)) return setState(restingState());
+// Live audio: frames stream to the server while the user speaks, so it can send partial transcripts.
+// The last ~300 ms before the VAD fires are kept here and sent first, so the first syllable is not lost.
+const PRE_SPEECH_FRAMES = 10; // Silero v5 frames are 32 ms
+const preSpeech: Float32Array[] = [];
+let streaming = false;
+let liveBubble: HTMLElement | null = null;
+
+function endLiveBubble(remove: boolean) {
+  if (remove) liveBubble?.remove();
+  else liveBubble?.classList.remove("partial");
+  liveBubble = null;
+}
+
+function abortUtterance() {
+  if (!streaming) return;
+  streaming = false;
+  link.send({ type: "utterance_abort" });
+  endLiveBubble(true);
+}
+
+function finishUtterance(extra: object = {}) {
+  streaming = false;
+  link.send({ type: "utterance_end", ...extra });
   t.end = performance.now();
   t.transcript = t.firstAudio = 0;
   showMetrics();
@@ -90,47 +111,72 @@ function sendUtterance(audio: Float32Array, extra: object = {}) {
 
 const handlers = {
   onSpeechStart() {
-    if (!player?.isSpeaking) return;
-    if (mode !== "conversation" || !settings.bargeIn) return;
+    const finnipTalking = player?.isSpeaking;
+    if (finnipTalking && (mode !== "conversation" || !settings.bargeIn)) return;
+    if (!link.online) return;
+    streaming = true;
+    link.send({ type: "utterance_start" });
+    preSpeech.splice(0).forEach((f) => link.sendFrame(f));
+    if (!finnipTalking) {
+      liveBubble = bubble("user", "…");
+      liveBubble.classList.add("partial");
+      return;
+    }
     clearTimeout(bargeTimer);
     bargeTimer = window.setTimeout(() => {
       bargePlayed = player!.played();
       void player!.pause();
       statusEl.textContent = "Te escucho";
+      liveBubble = bubble("user", "…");
+      liveBubble.classList.add("partial");
     }, BARGE_IN_MS);
   },
   onMisfire() {
     clearTimeout(bargeTimer);
+    abortUtterance();
     if (bargePlayed) {
       bargePlayed = null;
       void player?.resume();
       setState("speaking");
     }
   },
-  onSpeechEnd(audio: Float32Array) {
+  onSpeechEnd() {
     clearTimeout(bargeTimer);
-    if (bargePlayed) {
-      sendUtterance(audio, { barge_in: true, ...bargePlayed });
-    } else if (!player?.isSpeaking) {
-      sendUtterance(audio);
-      if (mode === "single") void mic.close().then(() => setState(state));
-    }
+    if (!streaming) return;
+    if (bargePlayed) return finishUtterance({ barge_in: true, ...bargePlayed });
+    if (player?.isSpeaking) return abortUtterance(); // too short to count as an interruption
+    finishUtterance();
+    if (mode === "single") void mic.close().then(() => setState(state));
+  },
+  onFrame(frame: Float32Array) {
+    if (streaming) return link.sendFrame(frame);
+    preSpeech.push(frame);
+    if (preSpeech.length > PRE_SPEECH_FRAMES) preSpeech.shift();
   },
   onLevel(p: number) {
     speechLevel = p;
   },
 };
 
+let opening = false;
+
 async function openMic() {
+  if (opening) return;
+  opening = true;
   try {
-    setState("listening");
-    await mic.open(handlers);
+    statusEl.textContent = "Permite el micrófono…";
+    await mic.open(handlers, () => (statusEl.textContent = "Preparando…"));
     setState("listening");
   } catch (err) {
     console.error(err);
     await mic.close();
     setState("off");
-    statusEl.textContent = "No pude abrir el micrófono";
+    statusEl.textContent =
+      err instanceof DOMException && err.name === "NotAllowedError"
+        ? "Sin permiso de micrófono: actívalo en el navegador"
+        : "No pude abrir el micrófono";
+  } finally {
+    opening = false;
   }
 }
 
@@ -147,15 +193,20 @@ orb.addEventListener("click", async () => {
   void getPlayer().unlock();
   if (state === "speaking" || state === "thinking") return interrupt();
   if (mic.isOpen) {
-    await mic.close();
+    await closeMic();
     return setState("off");
   }
   await openMic();
 });
 
+async function closeMic() {
+  abortUtterance();
+  await mic.close();
+}
+
 power.addEventListener("click", async () => {
   if (state === "speaking" || state === "thinking") interrupt();
-  await mic.close();
+  await closeMic();
   setState("off");
 });
 
@@ -163,7 +214,7 @@ document.querySelectorAll<HTMLButtonElement>(".modes button").forEach((btn) =>
   btn.addEventListener("click", async () => {
     mode = btn.dataset.mode as Mode;
     document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b === btn));
-    if (mic.isOpen) await mic.close();
+    if (mic.isOpen) await closeMic();
     setState(state === "listening" ? "off" : state);
   }),
 );
@@ -175,6 +226,10 @@ link.onStatus = (online) => {
 
 link.onEvent = (e) => {
   switch (e.type) {
+    case "partial":
+      if (liveBubble) liveBubble.textContent = e.text;
+      log.scrollTop = log.scrollHeight;
+      break;
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
@@ -182,9 +237,14 @@ link.onEvent = (e) => {
         bargePlayed = null;
         player?.flush();
       }
-      if (!e.text) return setState(restingState());
+      if (!e.text) {
+        endLiveBubble(true);
+        return setState(restingState());
+      }
       acceptAudio = true;
-      bubble("user", e.text);
+      if (liveBubble) liveBubble.textContent = e.text;
+      else bubble("user", e.text);
+      endLiveBubble(false);
       finnipBubble = null;
       setState("thinking");
       break;
@@ -194,6 +254,7 @@ link.onEvent = (e) => {
       finnipBubble.textContent = `${finnipBubble.textContent} ${e.text}`.trim();
       break;
     case "resume":
+      endLiveBubble(true);
       bargePlayed = null;
       void player?.resume();
       setState("speaking");
@@ -254,3 +315,4 @@ if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js"
 setState("off");
 showMetrics();
 link.connect();
+setTimeout(Mic.preload, 1500);
