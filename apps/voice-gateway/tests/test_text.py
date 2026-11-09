@@ -92,22 +92,23 @@ class RemindersTest(unittest.TestCase):
         self.assertFalse(T.wants_reminders("ponme un recordatorio a las 8"))
         self.assertFalse(T.wants_reminders("cancela la alarma"))
         self.assertFalse(T.wants_reminders("enciende la lámpara"))
+        self.assertTrue(T.wants_reminders("qué eventos tengo en mi calendario"))
+        self.assertFalse(T.wants_reminders("agenda un evento mañana"))
 
-    def test_items_are_sorted_and_in_mexico_time(self):
+    def test_calendar_items_in_mexico_time(self):
         from datetime import datetime
         now = datetime.fromisoformat("2026-11-09T12:00:00-06:00")
-        jobs = [
-            {"name": "Luces", "next_run_at": "2026-11-10T14:00:00+00:00", "schedule": {"kind": "cron", "expr": "0 8 * * *"}},
-            {"name": "Hecho", "enabled": False, "next_run_at": "2026-11-09T20:00:00+00:00"},
-            {"name": "Pagar", "next_run_at": "2026-11-10T05:30:00+00:00", "schedule": {"kind": "once"}},
-            {"name": "Viaje", "next_run_at": "2026-11-20T18:00:00-06:00"},
+        events = [
+            {"summary": "Pagar", "start": {"dateTime": "2026-11-10T05:30:00+00:00"}},
+            {"summary": "Junta", "start": {"dateTime": "2026-11-10T08:00:00-06:00"}},
+            {"summary": "Viaje", "start": {"date": "2026-11-20"}},
+            {"start": {"date": "2026-11-09"}},
         ]
-        self.assertEqual(T.reminder_items(jobs, now), [
+        self.assertEqual(T.calendar_items(events, now), [
             {"name": "Pagar", "when": "Hoy · 23:30"},
-            {"name": "Luces", "when": "Mañana · 08:00 · diario"},
-            {"name": "Viaje", "when": "vie 20 nov · 18:00"},
+            {"name": "Junta", "when": "Mañana · 08:00"},
+            {"name": "Viaje", "when": "vie 20 nov · todo el día"},
+            {"name": "Sin título", "when": "Hoy · todo el día"},
         ])
-
-
 if __name__ == "__main__":
     unittest.main()

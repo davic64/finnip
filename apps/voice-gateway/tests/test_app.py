@@ -23,10 +23,6 @@ class FakeStt:
 class FakeHermes:
     def __init__(self):
         self.prompts, self.replies, self.closed = [], [], 0
-        self.scheduled = []
-
-    async def jobs(self):
-        return self.scheduled
 
     async def stream(self, text):
         self.prompts.append(text)
@@ -253,9 +249,11 @@ class GatewayTest(unittest.TestCase):
         self.assertFalse(any(isinstance(m, dict) and m["type"] == "stats" for m in got))
 
     def test_reminders_question_shows_them_before_the_reply(self):
-        self.hermes.scheduled = [{"name": "Pagar luz", "enabled": True, "next_run_at": "2030-01-02T15:00:00+00:00",
-                                  "schedule": {"kind": "once"}}]
-        client = TestClient(create_app(self.stt, self.hermes, FakeTts()))
+        class FakeCalendar:
+            async def events(self):
+                return [{"summary": "Pagar luz", "start": {"dateTime": "2030-01-02T09:00:00-06:00"}}]
+
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), calendar=FakeCalendar()))
         self.hermes.replies += [(["Tiene uno."], False), (["Listo."], False)]
         with client.websocket_connect("/ws", headers=USER) as ws:
             self.say(ws, "qué recordatorios tengo")

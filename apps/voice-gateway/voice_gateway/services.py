@@ -62,12 +62,36 @@ class HermesClient:
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 
 
-    async def jobs(self):
-        """Active scheduled jobs (reminders, timed device actions)."""
-        url = self.url.removesuffix("/v1/responses") + "/api/jobs"
-        resp = await self.http.get(url, headers={"Authorization": f"Bearer {self.key}"})
+class GoogleCalendar:
+    """Upcoming events of the user's primary Google Calendar, read only.
+    The OAuth token file is Hermes' (calendar scope), mounted read only; the access token is refreshed
+    in memory and never written back."""
+    API = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    def __init__(self, path):
+        self.path = path
+        self.http = httpx.AsyncClient(timeout=10)
+        self.access, self.expires = None, 0.0
+    async def token(self):
+        import time
+        if self.access and time.monotonic() < self.expires - 60:
+            return self.access
+        with open(self.path) as f:
+            saved = json.load(f)
+        resp = await self.http.post(saved.get("token_uri") or "https://oauth2.googleapis.com/token", data={
+            "grant_type": "refresh_token", "refresh_token": saved["refresh_token"],
+            "client_id": saved["client_id"], "client_secret": saved["client_secret"]})
         resp.raise_for_status()
-        return resp.json()["jobs"]
+        data = resp.json()
+        self.access, self.expires = data["access_token"], time.monotonic() + data.get("expires_in", 3600)
+        return self.access
+    async def events(self, days=7, limit=8):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        params = {"timeMin": now.isoformat(), "timeMax": (now + timedelta(days=days)).isoformat(),
+                  "singleEvents": "true", "orderBy": "startTime", "maxResults": str(limit)}
+        resp = await self.http.get(self.API, params=params, headers={"Authorization": f"Bearer {await self.token()}"})
+        resp.raise_for_status()
+        return resp.json().get("items", [])
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")

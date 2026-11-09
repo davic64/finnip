@@ -1,5 +1,5 @@
 // Cards at the top right of the stage. Device cards: a device changed (by voice, Telegram or by hand).
-// Reminders card: the list Finnip was asked about, shown before the voice arrives.
+// Agenda card: Google Calendar events Finnip was asked about, shown before the voice arrives.
 import type { ServerEvent } from "./link";
 
 type Device = Extract<ServerEvent, { type: "device" }>;
@@ -46,7 +46,7 @@ export function showCard(d: Device) {
 
 export function showReminders(items: Reminder[]) {
   const card = place("reminders", "card list", 15000);
-  const title = Object.assign(document.createElement("h3"), { textContent: "Recordatorios" });
+  const title = Object.assign(document.createElement("h3"), { textContent: "Agenda · 7 días" });
   const rows = items.length
     ? items.map((r) => {
         const row = document.createElement("p");
@@ -56,6 +56,6 @@ export function showReminders(items: Reminder[]) {
         );
         return row;
       })
-    : [Object.assign(document.createElement("p"), { className: "empty", textContent: "Sin recordatorios pendientes" })];
+    : [Object.assign(document.createElement("p"), { className: "empty", textContent: "Nada en los próximos 7 días" })];
   card.replaceChildren(title, ...rows);
 }
