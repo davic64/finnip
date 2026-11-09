@@ -1,4 +1,4 @@
-"""voice-gateway: the /ws protocol (design.md, decisiones 6 y 9) and the PWA's static files."""
+"""voice-gateway: the /ws protocol (Session below) and the PWA's static files."""
 import asyncio
 import contextlib
 import json
