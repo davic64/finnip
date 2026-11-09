@@ -218,6 +218,17 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(self.hermes.closed, 0)
             self.assertEqual(len(self.hermes.prompts), 1)
 
+    def test_standby_only_wakes_up_with_finnip(self):
+        self.hermes.replies.append((["Listo."], False))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "y qué tal el partido", wake=True)
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+            self.say(ws, "Finny, apaga la lámpara", wake=True)
+            got = self.receive_until(ws, "done")
+        self.assertEqual(got[0], {"type": "wake"})
+        self.assertIn({"type": "transcript", "text": "apaga la lámpara"}, got)
+        self.assertEqual(self.hermes.prompts, ["apaga la lámpara"])
+
     def test_server_question_sends_stats_and_feeds_them_to_hermes(self):
         stats = {"cpu": 12, "ram_used": 2.9, "ram_total": 7.6, "disk_used": 27, "disk_total": 225,
                  "temp": 37, "load": 0.34, "cores": 4, "uptime": 90000}

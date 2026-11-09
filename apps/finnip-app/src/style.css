@@ -104,17 +104,6 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.6; }
 body[data-state="off"] .status { color: var(--muted); text-shadow: none; }
 body[data-state="thinking"] .status { animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0.45; } }
-.power {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
-  color: var(--danger);
-  border-radius: 2px;
-  padding: 6px 16px;
-  font: 11px var(--mono);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
 .metrics { margin: 0; font: 11px var(--mono); color: var(--muted); }
 
 /* Stats HUD: four gauges in the stage corners, the shrunken hologram in the middle. */

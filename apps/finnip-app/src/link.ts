@@ -8,6 +8,7 @@ export type ServerEvent =
   | { type: "reply_text"; seq: number; text: string }
   | { type: "audio"; seq: number; format: string }
   | { type: "resume" }
+  | { type: "wake" }
   | { type: "theme"; rgb: [number, number, number] }
   | ({ type: "stats" } & Stats)
   | { type: "done" }

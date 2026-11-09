@@ -9,12 +9,11 @@ import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Setting
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
 
 type Mode = "conversation" | "single";
-type State = "off" | "listening" | "thinking" | "speaking";
+type State = "off" | "standby" | "listening" | "thinking" | "speaking";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const orb = $<HTMLButtonElement>("orb");
 const statusEl = $("status");
-const power = $<HTMLButtonElement>("power");
 const metricsEl = $("metrics");
 const net = $("net");
 const hud = new Hud($("hud"));
@@ -71,21 +70,34 @@ const t = { end: 0, transcript: 0, firstAudio: 0 };
 
 const STATUS: Record<State, string> = {
   off: "Toca para hablar",
+  standby: "Di «Finnip» o toca",
   listening: "Te escucho",
   thinking: "Pensando…",
   speaking: "Toca para interrumpir",
 };
 
+// Conversation mode falls asleep after SLEEP_MS without speech: the mic stays open in standby and
+// only a phrase that starts with "Finnip" (checked by the server) or a tap wakes it up again.
+const SLEEP_MS = 2000;
+let asleep = false;
+let sleepTimer = 0;
+
 function setState(next: State) {
   state = next;
   document.body.dataset.state = next;
-  if (next === "listening" || next === "off") hud.hide(1200); // stats live only while Finnip talks
+  clearTimeout(sleepTimer);
+  if (next === "listening" && mode === "conversation")
+    sleepTimer = window.setTimeout(() => {
+      if (state !== "listening" || streaming) return;
+      asleep = true;
+      setState("standby");
+    }, SLEEP_MS);
+  if (next === "listening" || next === "off" || next === "standby") hud.hide(1200); // stats live only while Finnip talks
   statusEl.textContent = !link.online ? "Sin conexión con Finnip" : STATUS[next];
-  power.hidden = !(mode === "conversation" && mic.isOpen);
   orb.setAttribute("aria-pressed", String(mic.isOpen));
 }
 
-const restingState = (): State => (mic.isOpen ? "listening" : "off");
+const restingState = (): State => (!mic.isOpen ? "off" : asleep ? "standby" : "listening");
 
 function getPlayer() {
   if (!player) {
@@ -123,6 +135,7 @@ function abortUtterance() {
 
 function finishUtterance() {
   streaming = false;
+  if (asleep) return link.send({ type: "utterance_end", wake: true }); // the server checks for "Finnip"
   link.send({ type: "utterance_end" });
   t.end = performance.now();
   t.transcript = t.firstAudio = 0;
@@ -140,6 +153,7 @@ const handlers = {
   },
   onMisfire() {
     abortUtterance();
+    if (state === "listening") setState("listening"); // re-arm the sleep timer
   },
   onSpeechEnd() {
     if (!streaming) return;
@@ -165,7 +179,7 @@ async function openMic() {
   try {
     statusEl.textContent = "Permite el micrófono…";
     await mic.open(handlers, () => (statusEl.textContent = "Preparando…"));
-    setState("listening");
+    setState(restingState());
   } catch (err) {
     console.error(err);
     await mic.close();
@@ -189,10 +203,15 @@ function interrupt() {
 orb.addEventListener("click", async () => {
   void getPlayer().unlock();
   if (state === "speaking" || state === "thinking") return interrupt();
+  if (state === "standby") {
+    asleep = false;
+    return setState("listening");
+  }
   if (mic.isOpen) {
     await closeMic();
     return setState("off");
   }
+  asleep = false;
   await openMic();
 });
 
@@ -200,12 +219,6 @@ async function closeMic() {
   abortUtterance();
   await mic.close();
 }
-
-power.addEventListener("click", async () => {
-  if (state === "speaking" || state === "thinking") interrupt();
-  await closeMic();
-  setState("off");
-});
 
 document.querySelectorAll<HTMLButtonElement>(".modes button").forEach((btn) =>
   btn.addEventListener("click", async () => {
@@ -223,6 +236,12 @@ link.onStatus = (online) => {
 
 link.onEvent = (e) => {
   switch (e.type) {
+    case "wake":
+      asleep = false;
+      void getPlayer().unlock(); // allowed without a tap while the mic is capturing
+      player?.chime();
+      setState("listening");
+      break;
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
@@ -268,7 +287,7 @@ const levels = new Uint8Array(128);
     level = speechLevel;
   }
   if (holo) {
-    holo.state = state;
+    holo.state = state === "standby" ? "off" : state;
     holo.shrink = hud.on;
     holo.frame(level);
   }
@@ -306,3 +325,16 @@ setState("off");
 showMetrics();
 link.connect();
 setTimeout(Mic.preload, 1500);
+
+// Mic already allowed: open straight into standby, waiting for "Finnip". Otherwise the first tap
+// asks for permission (browsers only show that prompt after a gesture).
+void (async () => {
+  try {
+    const perm = await navigator.permissions.query({ name: "microphone" as PermissionName });
+    if (perm.state !== "granted" || mode !== "conversation") return;
+  } catch {
+    return; // no Permissions API for the mic (older Safari): wait for the tap
+  }
+  asleep = true;
+  await openMic();
+})();
