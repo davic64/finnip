@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#05070d" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Finnip" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" href="/icons/icon-192.png" />
+    <title>Finnip</title>
+  </head>
+  <body data-state="off">
+    <main class="app">
+      <header class="top">
+        <span class="brand">FINNIP</span>
+        <span id="net" class="net" title="Conexión"></span>
+        <button id="settings-btn" class="icon-btn" aria-label="Ajustes">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5.1-1-.1-1 2.1-1.6-2-3.5-2.5 1a7.5 7.5 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6c-.6.3-1.2.6-1.7 1l-2.5-1-2 3.5L4.6 11l-.1 1 .1 1-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.1-1.6Z"/></svg>
+        </button>
+      </header>
+
+      <section class="stage">
+        <button id="orb" class="orb" aria-label="Hablar con Finnip" aria-pressed="false">
+          <span class="halo"></span>
+          <span class="ring"></span>
+          <span class="core"></span>
+        </button>
+        <p id="status" class="status" aria-live="polite">Toca para hablar</p>
+        <button id="power" class="power" hidden>Terminar conversación</button>
+        <p id="metrics" class="metrics" hidden></p>
+      </section>
+
+      <section id="log" class="log" aria-live="polite"></section>
+
+      <nav class="modes" aria-label="Modo">
+        <button data-mode="conversation" class="on">Conversación</button>
+        <button data-mode="single">Un mensaje</button>
+      </nav>
+    </main>
+
+    <dialog id="settings" class="sheet">
+      <form method="dialog">
+        <h2>Ajustes</h2>
+        <label class="row"><span>Interrumpir con la voz</span><input id="opt-barge" type="checkbox" /></label>
+        <label class="row"><span>Mostrar métricas de latencia</span><input id="opt-metrics" type="checkbox" /></label>
+        <button class="done">Listo</button>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

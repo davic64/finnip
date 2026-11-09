@@ -6,7 +6,9 @@ Telegram y controla dispositivos del hogar mediante Home Assistant.
 ## Arquitectura
 
 ```
-Telegram → Hermes Agent (finnip-brain)
+PWA finnip-app ──wss (tailscale serve)──► voice-gateway ──/v1/responses──┐
+                                           STT faster-whisper · Edge TTS   │
+Telegram ───────────────────────────────────────────────────────────────► Hermes Agent (finnip-brain)
              ├─ plugin finnip_voice ──HTTPS + Bearer──► Fish Audio (respuestas habladas)
              └─ plugin finnip_lights ──HTTP + Bearer──► Home Bridge (finnip-home-bridge)
                                                           └─ REST ──► Home Assistant (finnip-homeassistant)
@@ -18,6 +20,7 @@ Telegram → Hermes Agent (finnip-brain)
 | `hermes` | `finnip-brain` | Agente de IA conectado a Telegram. Carga los plugins `finnip_lights` y `finnip_voice`. |
 | `home-bridge` | `finnip-home-bridge` | API TypeScript (Fastify + Zod). Único punto de acceso de Hermes a Home Assistant. |
 | `homeassistant` | `finnip-homeassistant` | Domótica. Red del host y D-Bus para Bluetooth (integración `elkbledom`). |
+| `voice-gateway` | `finnip-voice-gateway` | Conversación por voz en tiempo real (WebSocket `/ws`) y la PWA. Solo por Tailscale. |
 
 Hermes nunca recibe `HA_TOKEN`: solo conoce `BRIDGE_API_KEY` y una lista
 cerrada de operaciones expuestas por Home Bridge.
@@ -29,8 +32,10 @@ apps/
   home-bridge/     API TypeScript, pruebas Vitest y Dockerfile (ver su README)
   finnip-lights/   Plugin Python de Hermes: herramienta finnip_lights
   finnip-voice/    Plugin Python de Hermes: proveedor TTS fish (Fish Audio)
+  voice-gateway/   Servicio Python (Starlette): /ws, STT, Hermes en streaming, TTS por frase
+  finnip-app/      PWA (Vite + TypeScript): modos de micrófono, interrupción, reproducción
 compose/
-  compose.yaml     Definición de los tres servicios
+  compose.yaml     Definición de los servicios
 config/            Variables de entorno con secretos (no versionado)
 data/              Datos persistentes de Hermes y Home Assistant (no versionado)
 backups/           Respaldos locales (no versionado)
@@ -43,6 +48,9 @@ Crear con permisos `600`:
 - `config/homeassistant.env`: `HA_TOKEN` y `BRIDGE_API_KEY` (mínimo 32 caracteres).
 - `config/hermes-bridge.env`: `BRIDGE_API_KEY`, con el mismo valor.
 - `data/hermes/.env`: `FISH_API_KEY` de Fish Audio, para la voz de Finnip.
+- `config/voice-gateway.env`: `API_SERVER_KEY` (el mismo de `data/hermes/.env`),
+  `ALLOWED_TAILSCALE_USERS` (logins separados por coma) y, opcional,
+  `STT_INITIAL_PROMPT`, `VOICE_MODEL` (por ejemplo `claude-haiku-5-5`) y `TTS_VOICE`.
 
 `HA_URL` y `FINNIP_BRIDGE_URL` se definen en `compose/compose.yaml`.
 
@@ -116,6 +124,40 @@ sudo docker exec -u 10000 finnip-brain hermes pm status | grep -c stt-whisper   
 Si devuelve `0` o el log muestra `No STT provider available`, repetir la
 instalación. El modelo `base` (~150 MB) se descarga en el volumen con la
 primera nota de voz.
+
+## Interfaz de voz (PWA)
+
+`https://finnip.tail7d805f.ts.net`, solo desde dispositivos de la tailnet con un
+usuario de `ALLOWED_TAILSCALE_USERS`. En el iPhone: Safari → Compartir →
+**Añadir a pantalla de inicio**.
+
+- **Conversación**: el orbe abre el micrófono y queda escuchando; cada frase es un turno.
+  "Terminar conversación" cierra el micrófono por completo.
+- **Un mensaje**: el orbe escucha una frase y se cierra solo.
+- **Interrumpir**: tocar el orbe mientras Finnip habla. En modo conversación también
+  hablando encima (se desactiva en Ajustes → Interrumpir con la voz).
+
+Publicación con Tailscale (una vez, en el host):
+
+```sh
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8765
+```
+
+`voice-gateway` solo escucha en `127.0.0.1:8765` del host y exige el encabezado
+`Tailscale-User-Login` que pone `tailscale serve`. Habla con Hermes por su API
+server (`API_SERVER_HOST=0.0.0.0` en la red interna de Compose, sin puerto
+publicado). El protocolo de `/ws`, que también usará el ESP32, está en
+`openspec/changes/add-voice-interface/design.md`; `apps/voice-gateway/tools/ws_client.py`
+es un cliente de referencia que mide la latencia.
+
+Desplegar cambios:
+
+```sh
+# PWA: recompilar basta, dist/ está montado en el contenedor
+cd apps/finnip-app && sudo docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp -v "$PWD":/app -w /app node:22-slim sh -c "npm ci && npm run build"
+# Backend
+cd compose && sudo docker compose up -d --build voice-gateway
+```
 
 ## Dispositivos
 
