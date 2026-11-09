@@ -6,6 +6,8 @@ export class Player {
   private source: AudioBufferSourceNode | null = null;
   private startedAt = 0;
   private replyDone = false;
+  private decoding = 0; // chunks received but not decoded yet
+  private epoch = 0; // bumped by flush(): a chunk decoded after it belongs to a dropped reply
   private speaking = false;
   readonly analyser = this.ctx.createAnalyser();
   onStart = () => {};
@@ -26,10 +28,15 @@ export class Player {
   }
 
   async enqueue(seq: number, mp3: ArrayBuffer) {
-    const buffer = await this.ctx.decodeAudioData(mp3);
-    if (seq < this.nextSeq) return; // flushed while decoding
-    this.queue.set(seq, buffer);
-    if (!this.source) this.playNext();
+    const epoch = this.epoch;
+    this.decoding++;
+    try {
+      const buffer = await this.ctx.decodeAudioData(mp3);
+      if (epoch === this.epoch && seq >= this.nextSeq) this.queue.set(seq, buffer);
+    } finally {
+      this.decoding--;
+      if (!this.source && epoch === this.epoch) this.playNext();
+    }
   }
 
   /** Short soft two-note chime: instant feedback that the phrase was heard, before any reply. */
@@ -53,14 +60,16 @@ export class Player {
   /** Server sent "done": finish once the queue drains. */
   endOfReply() {
     this.replyDone = true;
-    if (!this.source && this.queue.size === 0) this.finish();
+    if (!this.source) this.playNext();
   }
 
   private playNext() {
     const buffer = this.queue.get(this.nextSeq);
     if (!buffer) {
       this.source = null;
-      if (this.replyDone) this.finish();
+      // "done" often arrives while the last chunk is still decoding (short replies): finishing then
+      // reset nextSeq, so that chunk played and the player waited forever, stuck in "speaking".
+      if (this.replyDone && this.decoding === 0) this.finish();
       return; // waiting for the next chunk
     }
     if (!this.speaking) {
@@ -81,6 +90,7 @@ export class Player {
 
   private finish() {
     const was = this.speaking;
+    this.queue.clear();
     this.nextSeq = 0;
     this.replyDone = false;
     this.speaking = false;
@@ -106,7 +116,7 @@ export class Player {
     const src = this.source;
     this.source = null;
     src?.stop();
-    this.queue.clear();
+    this.epoch++;
     void this.ctx.resume();
     this.finish();
   }
