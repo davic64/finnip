@@ -6,7 +6,7 @@ import { Player } from "./player";
 type Mode = "conversation" | "single";
 type State = "off" | "listening" | "thinking" | "speaking";
 
-const BARGE_IN_MS = 300; // continuous speech needed to interrupt Finnip by voice
+const BARGE_IN_MS = 700; // continuous speech needed to interrupt Finnip by voice (echo-proofing)
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const orb = $<HTMLButtonElement>("orb");
 const statusEl = $("status");
@@ -57,8 +57,14 @@ const restingState = (): State => (mic.isOpen ? "listening" : "off");
 function getPlayer() {
   if (!player) {
     player = new Player();
-    player.onStart = () => setState("speaking");
-    player.onIdle = () => setState(restingState());
+    player.onStart = () => {
+      mic.setStrict(true);
+      setState("speaking");
+    };
+    player.onIdle = () => {
+      mic.setStrict(false);
+      setState(restingState());
+    };
   }
   return player;
 }
@@ -106,7 +112,10 @@ function finishUtterance(extra: object = {}) {
   t.end = performance.now();
   t.transcript = t.firstAudio = 0;
   showMetrics();
-  if (!("barge_in" in extra)) setState("thinking");
+  if (!("barge_in" in extra)) {
+    player?.chime();
+    setState("thinking");
+  }
 }
 
 const handlers = {

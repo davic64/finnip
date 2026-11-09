@@ -32,6 +32,24 @@ export class Player {
     if (!this.source) this.playNext();
   }
 
+  /** Short soft two-note chime: instant feedback that the phrase was heard, before any reply. */
+  chime() {
+    const t0 = this.ctx.currentTime;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.06, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+    gain.connect(this.ctx.destination);
+    [880, 1320].forEach((freq, i) => {
+      const osc = this.ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      osc.start(t0 + i * 0.07);
+      osc.stop(t0 + 0.22);
+    });
+  }
+
   /** Server sent "done": finish once the queue drains. */
   endOfReply() {
     this.replyDone = true;

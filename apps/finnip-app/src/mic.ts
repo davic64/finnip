@@ -34,7 +34,7 @@ export class Mic {
       onnxWASMBasePath: "/vad/",
       positiveSpeechThreshold: 0.6,
       negativeSpeechThreshold: 0.45,
-      redemptionMs: 550, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
+      redemptionMs: 450, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
       minSpeechMs: 250,
       preSpeechPadMs: 300,
       getStream: async () => stream,
@@ -49,6 +49,11 @@ export class Mic {
       },
       startOnLoad: true,
     });
+  }
+
+  /** While Finnip talks, require clearer and longer speech so its own echo does not count as the user. */
+  setStrict(strict: boolean) {
+    this.vad?.setOptions(strict ? { positiveSpeechThreshold: 0.85, minSpeechMs: 500 } : { positiveSpeechThreshold: 0.6, minSpeechMs: 250 });
   }
 
   /** Warm the HTTP cache so the first tap does not wait for the ~4 MB VAD runtime. */

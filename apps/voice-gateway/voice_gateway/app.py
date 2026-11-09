@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from array import array
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -21,8 +22,14 @@ MAX_UTTERANCE_BYTES = 16000 * 2 * 60  # 60 s of PCM16 mono 16 kHz
 GENERIC_ERROR = "No pude completar la respuesta."
 # ponytail: live partials re-transcribe the whole utterance each time (O(n²) CPU on long phrases);
 # switch to a streaming STT if phrases get long or the CPU saturates.
-PARTIAL_EVERY = 0.5          # seconds between live transcripts
-PARTIAL_MIN_BYTES = 16000    # 0.5 s of new audio before another partial
+PARTIAL_EVERY = 0.3          # seconds between live transcripts
+PARTIAL_MIN_BYTES = 9600     # 0.3 s of new audio before another partial
+# The client keeps streaming the VAD's end-of-phrase silence (~0.45 s). As soon as the tail goes
+# silent the server transcribes right away; at utterance_end that result is the final transcript
+# when everything after it is silence (saves the ~0.7-1 s of a fresh transcription).
+TAIL_SILENCE_BYTES = 6400    # 0.2 s of silence at the tail triggers an immediate transcription
+# ponytail: fixed RMS threshold; a whispered last syllable could read as silence. Tune with real mics.
+SILENCE_RMS = 400
 DUPLICATE_WINDOW = 5.0       # seconds in which an identical transcript is dropped
 
 
@@ -30,6 +37,11 @@ def allowed_user(headers):
     allowed = {u.strip().lower() for u in os.environ.get("ALLOWED_TAILSCALE_USERS", "").split(",") if u.strip()}
     user = (headers.get("tailscale-user-login") or "").strip().lower()
     return bool(user) and user in allowed
+
+
+def is_silent(pcm16):
+    samples = array("h", pcm16[: len(pcm16) // 2 * 2])
+    return not samples or (sum(x * x for x in samples) / len(samples)) ** 0.5 < SILENCE_RMS
 
 
 class TailscaleOnly(BaseHTTPMiddleware):
@@ -48,6 +60,8 @@ class Session:
         self.turn = None          # task streaming the current reply
         self.listening = None     # task transcribing the last utterance
         self.partials = None      # task sending live transcripts while the user speaks
+        self.partial = ("", 0)    # last live transcript and how many audio bytes it covered
+        self.partial_job = None   # (task, bytes covered) of the transcription in flight
         # Shared by every connection: two open clients hearing the same phrase must not both send it.
         self.recent = recent if recent is not None else {"text": "", "at": 0.0}
         self.sentences = []       # current reply, index == audio seq
@@ -82,16 +96,36 @@ class Session:
             self.partials = None
 
     async def live_partials(self):
-        sent = 0
+        covered, last = 0, 0.0
         while True:
-            await asyncio.sleep(PARTIAL_EVERY)
+            await asyncio.sleep(0.1)
             size = len(self.audio)
-            if size < PARTIAL_MIN_BYTES or size - sent < PARTIAL_MIN_BYTES:
+            new = bytes(self.audio[covered:size])
+            if not new or is_silent(new):
+                continue  # nothing spoken since the last transcription
+            tail_silent = size >= TAIL_SILENCE_BYTES and is_silent(self.audio[size - TAIL_SILENCE_BYTES:size])
+            due = len(new) >= PARTIAL_MIN_BYTES and time.monotonic() - last >= PARTIAL_EVERY
+            if not (tail_silent or due):
                 continue
-            sent = size
-            text = await self.stt.transcribe(bytes(self.audio))
+            job = asyncio.create_task(self.stt.transcribe(bytes(self.audio[:size])))
+            self.partial_job = (job, size)
+            text = await asyncio.shield(job)  # utterance_end may still want this result
+            self.partial_job = None
+            covered, last = size, time.monotonic()
+            self.partial = (text, size)
             if text:
                 await self.send({"type": "partial", "text": text})
+
+    async def final_from_partials(self, audio):
+        """A live transcript that already covers everything but trailing silence, else None."""
+        job = self.partial_job
+        if job and is_silent(audio[job[1]:]):
+            with contextlib.suppress(Exception):
+                return await job[0]
+        text, covered = self.partial
+        if text and is_silent(audio[covered:]):
+            return text
+        return None
 
     async def on_control(self, data):
         kind = data.get("type")
@@ -99,7 +133,7 @@ class Session:
             await self.send({"type": "ready", "version": 1})
         elif kind == "utterance_start":
             self.stop_partials()
-            self.audio = bytearray()
+            self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
             self.partials = asyncio.create_task(self.live_partials())
         elif kind == "utterance_abort":
             self.stop_partials()
@@ -107,7 +141,7 @@ class Session:
         elif kind == "utterance_end":
             self.stop_partials()
             audio, self.audio = bytes(self.audio), bytearray()
-            self.listening = asyncio.create_task(self.on_utterance(audio, data))
+            self.listening = asyncio.create_task(self.on_utterance(audio, data, reuse=True))
         elif kind in ("cancel", "interrupt"):
             self.audio = bytearray()
             await self.stop_turn(data if kind == "interrupt" else None)
@@ -122,9 +156,11 @@ class Session:
             self.pending_heard = T.heard_text(self.sentences, int(played.get("played_seq", 0)),
                                               int(played.get("played_ms", 0)))
 
-    async def on_utterance(self, audio, data):
+    async def on_utterance(self, audio, data, reuse=False):
         try:
-            transcript = await self.stt.transcribe(audio) if audio else ""
+            ready = await self.final_from_partials(audio) if reuse else None
+            self.partial, self.partial_job = ("", 0), None
+            transcript = ready if ready is not None else (await self.stt.transcribe(audio) if audio else "")
         except Exception:
             log.exception("STT failed")
             await self.send({"type": "error", "message": "No pude entender el audio."})

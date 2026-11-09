@@ -12,6 +12,7 @@ import wave
 import websockets
 
 CHUNK = 16000 * 2 // 10  # 100 ms frames, like a live mic
+SILENCE_S = 0.5          # trailing silence the PWA streams before the VAD closes the phrase
 
 
 async def main(path, url, user):
@@ -21,8 +22,15 @@ async def main(path, url, user):
     async with websockets.connect(url, additional_headers={"Tailscale-User-Login": user}) as ws:
         await ws.send(json.dumps({"type": "hello", "client": "ws_client", "version": 1}))
         print(await ws.recv())
+        # Like the PWA: utterance_start, audio in real time (live partials), then the VAD's
+        # end-of-phrase silence, then utterance_end. Latency is measured from utterance_end.
+        await ws.send(json.dumps({"type": "utterance_start"}))
         for i in range(0, len(pcm), CHUNK):
             await ws.send(pcm[i:i + CHUNK])
+            await asyncio.sleep(0.1)
+        for _ in range(int(SILENCE_S * 10)):
+            await ws.send(bytes(CHUNK))
+            await asyncio.sleep(0.1)
         await ws.send(json.dumps({"type": "utterance_end"}))
         t0, first_audio, total = time.time(), None, 0
         async for msg in ws:
@@ -31,6 +39,8 @@ async def main(path, url, user):
                 total += len(msg)
                 continue
             event = json.loads(msg)
+            if event["type"] == "partial":
+                continue
             print(f"{time.time() - t0:6.2f}s {event}")
             if event["type"] == "done":
                 break

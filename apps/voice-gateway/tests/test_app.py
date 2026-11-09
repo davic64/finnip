@@ -12,8 +12,12 @@ USER = {"Tailscale-User-Login": "david@example.com"}
 
 
 class FakeStt:
+    def __init__(self):
+        self.calls = 0
+
     async def transcribe(self, pcm16):
-        return pcm16.decode()  # tests send the "transcript" as the audio bytes
+        self.calls += 1
+        return pcm16.decode().strip("\x00")  # tests send the "transcript" as the audio bytes; zeros = silence
 
 
 class FakeHermes:
@@ -40,8 +44,8 @@ class FakeTts:
 @mock.patch.dict(os.environ, {"ALLOWED_TAILSCALE_USERS": "david@example.com"})
 class GatewayTest(unittest.TestCase):
     def setUp(self):
-        self.hermes = FakeHermes()
-        self.client = TestClient(create_app(FakeStt(), self.hermes, FakeTts()))
+        self.hermes, self.stt = FakeHermes(), FakeStt()
+        self.client = TestClient(create_app(self.stt, self.hermes, FakeTts()))
 
     def say(self, ws, text, **extra):
         ws.send_bytes(text.encode())
@@ -134,6 +138,7 @@ class GatewayTest(unittest.TestCase):
             got = self.receive_until(ws, "done")
         self.assertEqual(got[0], {"type": "transcript", "text": "qué onda cómo estás"})
         self.assertEqual(self.hermes.prompts, ["qué onda cómo estás"])
+        self.assertEqual(self.stt.calls, 2)  # the last partial covered everything: no final re-transcription
 
     def test_identical_phrase_right_after_is_dropped(self):
         self.hermes.replies.append((["Bien."], False))
@@ -153,6 +158,18 @@ class GatewayTest(unittest.TestCase):
             self.say(iphone, "hola finnip")
             self.assertEqual(iphone.receive_json(), {"type": "done"})
         self.assertEqual(self.hermes.prompts, ["hola finnip"])
+
+    def test_tail_silence_is_transcribed_at_once_and_reused(self):
+        self.hermes.replies.append((["Hola, señor."], False))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            ws.send_json({"type": "utterance_start"})
+            ws.send_bytes("hola finnip".encode() + bytes(6400))  # speech, then 0.2 s of silence
+            self.assertEqual(ws.receive_json(), {"type": "partial", "text": "hola finnip"})
+            ws.send_bytes(bytes(6400))  # the rest of the VAD's end-of-phrase silence
+            ws.send_json({"type": "utterance_end"})
+            got = self.receive_until(ws, "done")
+        self.assertEqual(got[0], {"type": "transcript", "text": "hola finnip"})
+        self.assertEqual(self.stt.calls, 1)  # the silence-triggered partial was the final transcript
 
     def test_aborted_utterance_is_dropped(self):
         with self.client.websocket_connect("/ws", headers=USER) as ws:
