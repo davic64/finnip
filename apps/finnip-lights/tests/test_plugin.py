@@ -170,5 +170,64 @@ class FastPathTest(unittest.TestCase):
         self.assertIn("falló", result["context"])
 
 
+
+    def test_alexa_actions_forward_their_fields(self):
+        cases = [({"action": "play", "device": "echo", "query": "Coldplay"}, "play", {"query": "Coldplay"}),
+                 ({"action": "command", "device": "echo", "text": "pon una alarma a las 7"}, "command",
+                  {"text": "pon una alarma a las 7"}),
+                 ({"action": "volume", "device": "echo", "volume": 40}, "volume", {"volume": 40})]
+        for params, action, body in cases:
+            sent = []
+            def bridge(method, path, body=None):
+                sent.append((method, path, body))
+                return {"devices": [{"id": "media_player.echo", "name": "Echo Dave"}]} if method == "GET" else {}
+            with mock.patch.object(plugin, "call_bridge", bridge):
+                json.loads(plugin.handle(params))
+            self.assertEqual(sent[-1], ("POST", f"/devices/media_player.echo/{action}", body))
+
+    def test_music_orders(self):
+        cases = {
+            '"Pausa la música."': ("pause", None),
+            "Finnip, pausa": ("pause", None),
+            "para la música": ("pause", None),
+            "Reanuda la música": ("resume", None),
+            "sigue la música": ("resume", None),
+            "Finnip, reproduce algo de Queen": ("play", {"query": "algo de Queen"}),
+            "Reproduce Iron Man. De Black Sabbath.": ("play", {"query": "Iron Man De Black Sabbath"}),
+            "volumen al 20 por ciento": ("volume", {"volume": 20}),
+            "Reproduce Bohemian Rhapsody de Queen en Alexa": ("play", {"query": "Bohemian Rhapsody de Queen"}),
+            "pon el volumen al 30": ("volume", {"volume": 30}),
+            "volumen 45 %": ("volume", {"volume": 45}),
+        }
+        for message, expected in cases.items():
+            self.assertEqual(plugin.parse_music_order(message), expected, message)
+        for message in ("para mañana tengo junta", "¿qué está sonando?", "sigue explicándome lo de ayer por favor",
+                        "volumen 300", "reproduce", "continúa con la explicación"):
+            self.assertIsNone(plugin.parse_music_order(message), message)
+
+    def test_music_fast_path_runs_on_the_only_speaker(self):
+        sent = []
+        def bridge(method, path, body=None):
+            sent.append((method, path, body))
+            if method == "GET":
+                return {"devices": [{"id": "light.lampara", "domain": "light"},
+                                    {"id": "media_player.echo", "domain": "media_player"}]}
+            return {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            out = plugin.fast_path_hook(user_message="Pausa la música")
+        self.assertEqual(sent[-1], ("POST", "/devices/media_player.echo/pause", None))
+        self.assertIn("YA se ejecutó", out["context"])
+
+    def test_bare_continua_resumes_only_paused_music(self):
+        for state, resumed in (("paused", True), ("idle", False), ("playing", False)):
+            sent = []
+            def bridge(method, path, body=None):
+                sent.append((method, path))
+                return {"devices": [{"id": "media_player.echo", "domain": "media_player", "state": state}]} \
+                    if method == "GET" else {"confirmed": True}
+            with mock.patch.object(plugin, "call_bridge", bridge):
+                out = plugin.fast_path_hook(user_message="Continúa.")
+            self.assertEqual(("POST", "/devices/media_player.echo/resume") in sent, resumed, state)
+            self.assertEqual(out is not None, resumed, state)
 if __name__ == "__main__":
     unittest.main()

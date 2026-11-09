@@ -10,12 +10,13 @@ export function buildApp(options: {
     env?: Record<string, unknown>;
     fetchImpl?: typeof fetch;
     logger?: boolean;
+    settleMs?: number;
 } = {}) {
     const env = envSchema.parse(options.env ?? process.env);
     const app = Fastify({ logger: options.logger ?? true });
     const homeAssistant = createHomeAssistantService(env, options.fetchImpl);
     app.addHook("onRequest", createAuthHook(env.BRIDGE_API_KEY));
     registerHealthRoutes(app);
-    registerDeviceRoutes(app, createDevicesService(homeAssistant));
+    registerDeviceRoutes(app, createDevicesService(homeAssistant, options.settleMs));
     return app;
 }
