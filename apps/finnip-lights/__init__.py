@@ -166,17 +166,46 @@ FAST_VERBS = {
     "prende": "on", "prender": "on", "prendeme": "on",
     "enciende": "on", "encender": "on", "enciendeme": "on",
 }
+COLOR_VERBS = {"pon", "ponme", "ponle", "cambia", "cambiame", "cambiale", "pinta"}
+COLORS = {
+    "rojo": [255, 0, 0], "roja": [255, 0, 0], "verde": [0, 255, 0], "azul": [0, 60, 255],
+    "amarillo": [255, 200, 0], "amarilla": [255, 200, 0], "naranja": [255, 100, 0],
+    "morado": [140, 0, 255], "morada": [140, 0, 255], "violeta": [140, 0, 255], "lila": [190, 120, 255],
+    "rosa": [255, 60, 160], "rosado": [255, 60, 160], "magenta": [255, 0, 255],
+    "cian": [0, 230, 255], "turquesa": [0, 255, 190], "blanco": [255, 255, 255], "blanca": [255, 255, 255],
+}
+COLOR_LINKS = {"en", "a", "al", "color", "de"}
 ALL_LIGHTS = {"luces", "las luces", "todas las luces"}
 FILLER = {"finnip", "por", "favor", "porfa", "porfavor"}
 ARTICLES = {"el", "la", "los", "las", "de", "del"}
 
 
+def parse_color_order(words):
+    """["pon", "los", "monitores", "en", "rojo"] -> ("color", "monitores", {"rgb": [255, 0, 0]})."""
+    if words[0] not in COLOR_VERBS or words[-1] not in COLORS:
+        return None
+    rest = words[1:-1]
+    while rest and rest[-1] in COLOR_LINKS:
+        rest.pop()
+    body = {"rgb": COLORS[words[-1]]}
+    if " ".join(rest) in ALL_LIGHTS:
+        return "color", "all", body
+    target = [w for w in rest if w not in ARTICLES]
+    if not target or len(target) > 3 or any(w.isdigit() for w in target):
+        return None
+    return "color", " ".join(target), body
+
+
 def parse_fast_order(message):
-    """'"Apaga todas las luces."' -> ("off", "all"); '"prende la lámpara"' -> ("on", "lampara")."""
+    """'"Apaga todas las luces."' -> ("off", "all", None); '"pon los monitores en rojo"' ->
+    ("color", "monitores", {"rgb": [255, 0, 0]})."""
     text = normalize(message).strip('"')
     words = [w for w in re.sub(r"[^\w ]", " ", text).split() if w not in FILLER]
     if len(words) < 2 or "?" in text:
         return None
+    color = parse_color_order(words)
+    if color:
+        return color
     # Local Whisper mishears a letter ("apara" for "apaga"); accept a same-length near miss only,
     # so other conjugations ("apagaste") stay with the model.
     same_length = [v for v in FAST_VERBS if len(v) == len(words[0])]
@@ -186,18 +215,19 @@ def parse_fast_order(message):
     words[0] = verb[0]
     target = " ".join(words[1:])
     if target in ALL_LIGHTS:
-        return FAST_VERBS[words[0]], "all"
+        return FAST_VERBS[words[0]], "all", None
     target_words = [w for w in words[1:] if w not in ARTICLES]
     if not target_words or len(target_words) > 3 or any(w.isdigit() for w in target_words):
         return None
-    return FAST_VERBS[words[0]], " ".join(target_words)
+    return FAST_VERBS[words[0]], " ".join(target_words), None
 
 
-def fast_targets(target, devices):
+def fast_targets(target, devices, action="on"):
     """Device ids for a parsed target: every light for "all", else the one device whose name
     contains every target word. None when nothing or more than one device matches."""
     if target == "all":
-        ids = [d["id"] for d in devices if d.get("domain") == "light"]
+        ids = [d["id"] for d in devices if d.get("domain") == "light"
+               and (action != "color" or "color" in d.get("capabilities", ["color"]))]
         return ids or None
     wanted = set(target.split())
     ids = [d["id"] for d in devices if wanted <= set(normalize(d.get("name", "")).split())]
@@ -210,12 +240,12 @@ def fast_path_hook(user_message=None, **kwargs):
     order = parse_fast_order(user_message)
     if order is None:
         return None
-    action, target = order
+    action, target, body = order
     try:
-        ids = fast_targets(target, call_bridge("GET", "/devices").get("devices", []))
+        ids = fast_targets(target, call_bridge("GET", "/devices").get("devices", []), action)
         if not ids:
             return None
-        results = {id_: call_bridge("POST", f"/devices/{id_}/{action}") for id_ in ids}
+        results = {id_: call_bridge("POST", f"/devices/{id_}/{action}", body) for id_ in ids}
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté '{action}' antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
