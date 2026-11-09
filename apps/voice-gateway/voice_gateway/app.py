@@ -222,9 +222,11 @@ class Session:
                 log.exception("host stats failed")  # Finnip can still measure them with its tools
         if self.calendar and T.wants_reminders(user_text):
             try:
-                items = T.calendar_items(await self.calendar.events())
-                await self.send({"type": "reminders", "items": items})  # on screen before the voice arrives
-                prompt = T.reminders_note(items, prompt)
+                label, start, end = T.agenda_range(user_text)
+                items = T.calendar_items(await self.calendar.events(start, end))
+                # On screen before the voice arrives.
+                await self.send({"type": "reminders", "title": label, "items": items})
+                prompt = T.reminders_note(items, prompt, label)
             except Exception:
                 log.exception("calendar failed")  # Finnip can still list them with its tools
         queue = asyncio.Queue()

@@ -25,7 +25,7 @@ VTIMEZONE = ["BEGIN:VTIMEZONE", f"TZID:{TZ_NAME}", "BEGIN:STANDARD", "DTSTART:19
 RRULE = re.compile(r"FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(;[A-Z]+=[A-Z0-9,+\-]+)*")
 ACTIONS = ("list", "create", "delete")
 DEFAULT_MINUTES = 30
-MAX_EVENTS = 25
+MAX_EVENTS = 100  # a whole year fits
 NS = {"D": "DAV:", "C": "urn:ietf:params:xml:ns:caldav"}
 
 SCHEMA = {

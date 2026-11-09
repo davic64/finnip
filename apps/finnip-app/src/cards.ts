@@ -1,9 +1,7 @@
-// Cards at the top right of the stage. Device cards: a device changed (by voice, Telegram or by hand).
-// Agenda card: Google Calendar events Finnip was asked about, shown before the voice arrives.
+// Cards at the top right of the stage: a device changed (by voice, Telegram or by hand).
 import type { ServerEvent } from "./link";
 
 type Device = Extract<ServerEvent, { type: "device" }>;
-type Reminder = Extract<ServerEvent, { type: "reminders" }>["items"][number];
 const FADE_MS = 400; // matches the .card transition
 const box = document.getElementById("cards")!;
 const cards = new Map<string, HTMLElement>();
@@ -44,18 +42,4 @@ export function showCard(d: Device) {
   card.replaceChildren(dot, name, value);
 }
 
-export function showReminders(items: Reminder[]) {
-  const card = place("reminders", "card list", 15000);
-  const title = Object.assign(document.createElement("h3"), { textContent: "Agenda · 7 días" });
-  const rows = items.length
-    ? items.map((r) => {
-        const row = document.createElement("p");
-        row.append(
-          Object.assign(document.createElement("b"), { textContent: r.when }),
-          Object.assign(document.createElement("span"), { textContent: r.name }),
-        );
-        return row;
-      })
-    : [Object.assign(document.createElement("p"), { className: "empty", textContent: "Nada en los próximos 7 días" })];
-  card.replaceChildren(title, ...rows);
-}
+

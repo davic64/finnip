@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from voice_gateway import text as T
 
@@ -94,6 +95,23 @@ class RemindersTest(unittest.TestCase):
         self.assertFalse(T.wants_reminders("enciende la lámpara"))
         self.assertTrue(T.wants_reminders("qué eventos tengo en mi calendario"))
         self.assertFalse(T.wants_reminders("agenda un evento mañana"))
+        self.assertTrue(T.wants_reminders("qué tengo en mi agenda"))
+        self.assertTrue(T.wants_reminders("¿Qué tengo este mes?"))
+        self.assertFalse(T.wants_reminders("mañana tengo dentista, agéndalo"))
+
+    def test_agenda_range(self):
+        now = datetime.fromisoformat("2026-11-11T15:00:00-06:00")  # Wednesday
+        def r(text):
+            label, start, end = T.agenda_range(text, now)
+            return label, start.isoformat(), end.isoformat()
+        self.assertEqual(r("qué eventos tengo"), ("Próximos 7 días", "2026-11-11T15:00:00-06:00", "2026-11-18T15:00:00-06:00"))
+        self.assertEqual(r("los de la semana"), ("Esta semana", "2026-11-11T15:00:00-06:00", "2026-11-16T00:00:00-06:00"))
+        self.assertEqual(r("la próxima semana"), ("Próxima semana", "2026-11-16T00:00:00-06:00", "2026-11-23T00:00:00-06:00"))
+        self.assertEqual(r("los del mes"), ("Este mes", "2026-11-11T15:00:00-06:00", "2026-12-01T00:00:00-06:00"))
+        self.assertEqual(r("el próximo mes"), ("Próximo mes", "2026-12-01T00:00:00-06:00", "2027-01-01T00:00:00-06:00"))
+        self.assertEqual(r("los del año"), ("Este año", "2026-11-11T15:00:00-06:00", "2027-01-01T00:00:00-06:00"))
+        self.assertEqual(r("qué tengo hoy en la mañana"), ("Hoy", "2026-11-11T15:00:00-06:00", "2026-11-12T00:00:00-06:00"))
+        self.assertEqual(r("y mañana"), ("Mañana", "2026-11-12T00:00:00-06:00", "2026-11-13T00:00:00-06:00"))
 
     def test_calendar_items_in_mexico_time(self):
         from datetime import datetime
@@ -105,10 +123,10 @@ class RemindersTest(unittest.TestCase):
             {"start": "2026-11-09", "all_day": True},
         ]
         self.assertEqual(T.calendar_items(events, now), [
-            {"name": "Pagar", "when": "Hoy · 23:30"},
-            {"name": "Junta", "when": "Mañana · 08:00"},
-            {"name": "Viaje", "when": "vie 20 nov · todo el día"},
-            {"name": "Sin título", "when": "Hoy · todo el día"},
+            {"name": "Pagar", "when": "Hoy · 23:30", "date": "2026-11-09", "day": "Hoy", "time": "23:30"},
+            {"name": "Junta", "when": "Mañana · 08:00", "date": "2026-11-10", "day": "Mañana", "time": "08:00"},
+            {"name": "Viaje", "when": "vie 20 nov · todo el día", "date": "2026-11-20", "day": "vie 20 nov", "time": ""},
+            {"name": "Sin título", "when": "Hoy · todo el día", "date": "2026-11-09", "day": "Hoy", "time": ""},
         ])
 if __name__ == "__main__":
     unittest.main()

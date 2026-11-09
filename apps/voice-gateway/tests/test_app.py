@@ -250,7 +250,7 @@ class GatewayTest(unittest.TestCase):
 
     def test_reminders_question_shows_them_before_the_reply(self):
         class FakeCalendar:
-            async def events(self):
+            async def events(self, start, end):
                 return [{"summary": "Pagar luz", "start": "2030-01-02T09:00:00-06:00", "all_day": False}]
 
         client = TestClient(create_app(self.stt, self.hermes, FakeTts(), calendar=FakeCalendar()))
@@ -259,7 +259,9 @@ class GatewayTest(unittest.TestCase):
             self.say(ws, "qué recordatorios tengo")
             got = self.receive_until(ws, "done")
             panel = [m for m in got if isinstance(m, dict) and m["type"] == "reminders"]
-            self.assertEqual(panel, [{"type": "reminders", "items": [{"name": "Pagar luz", "when": "mié 2 ene · 09:00"}]}])
+            self.assertEqual(panel, [{"type": "reminders", "title": "Próximos 7 días",
+                                     "items": [{"name": "Pagar luz", "when": "mié 2 ene · 09:00", "date": "2030-01-02",
+                                                "day": "mié 2 ene", "time": "09:00"}]}])
             self.assertLess(got.index(panel[0]), next(i for i, m in enumerate(got) if isinstance(m, dict) and m["type"] == "audio"))
             self.assertIn("Pagar luz (mié 2 ene · 09:00)", self.hermes.prompts[0])
             self.say(ws, "ponme un recordatorio mañana a las 8")

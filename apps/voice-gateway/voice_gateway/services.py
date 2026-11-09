@@ -70,10 +70,8 @@ class ICloudCalendar:
         spec = importlib.util.spec_from_file_location("finnip_calendar", path)
         self.plugin = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.plugin)
-    async def events(self, days=7, limit=8):
-        from datetime import datetime, timedelta
-        now = datetime.now(self.plugin.TZ)
-        return await asyncio.to_thread(self.plugin.list_events, now, now + timedelta(days=days), limit)
+    async def events(self, start, end, limit=100):
+        return await asyncio.to_thread(self.plugin.list_events, start, end, limit)
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
