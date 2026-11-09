@@ -11,7 +11,6 @@ createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
 type Mode = "conversation" | "single";
 type State = "off" | "listening" | "thinking" | "speaking";
 
-const BARGE_IN_MS = 700; // continuous speech needed to interrupt Finnip by voice (echo-proofing)
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const orb = $<HTMLButtonElement>("orb");
 const statusEl = $("status");
@@ -51,7 +50,7 @@ try {
   if (saved) setTheme(saved);
 } catch {}
 
-const settings = { bargeIn: true, metrics: false };
+const settings = { metrics: false };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem("finnip.settings") || "{}"));
 } catch {}
@@ -68,8 +67,6 @@ let mode = "conversation" as Mode;
 let state = "off" as State;
 let speechLevel = 0;
 let acceptAudio = true;
-let bargeTimer = 0;
-let bargePlayed: { played_seq: number; played_ms: number } | null = null;
 const t = { end: 0, transcript: 0, firstAudio: 0 };
 
 const STATUS: Record<State, string> = {
@@ -94,11 +91,11 @@ function getPlayer() {
   if (!player) {
     player = new Player();
     player.onStart = () => {
-      mic.setStrict(true);
+      mic.setMuted(true); // Finnip never hears itself; interrupt it with a tap
       setState("speaking");
     };
     player.onIdle = () => {
-      mic.setStrict(false);
+      mic.setMuted(false);
       setState(restingState());
     };
   }
@@ -124,48 +121,29 @@ function abortUtterance() {
   link.send({ type: "utterance_abort" });
 }
 
-function finishUtterance(extra: object = {}) {
+function finishUtterance() {
   streaming = false;
-  link.send({ type: "utterance_end", ...extra });
+  link.send({ type: "utterance_end" });
   t.end = performance.now();
   t.transcript = t.firstAudio = 0;
   showMetrics();
-  if (!("barge_in" in extra)) {
-    player?.chime();
-    setState("thinking");
-  }
+  player?.chime();
+  setState("thinking");
 }
 
 const handlers = {
   onSpeechStart() {
-    const finnipTalking = player?.isSpeaking;
-    if (finnipTalking && (mode !== "conversation" || !settings.bargeIn)) return;
-    if (!link.online) return;
+    if (player?.isSpeaking || !link.online) return;
     streaming = true;
     link.send({ type: "utterance_start" });
     preSpeech.splice(0).forEach((f) => link.sendFrame(f));
-    if (!finnipTalking) return;
-    clearTimeout(bargeTimer);
-    bargeTimer = window.setTimeout(() => {
-      bargePlayed = player!.played();
-      void player!.pause();
-      statusEl.textContent = "Te escucho";
-    }, BARGE_IN_MS);
   },
   onMisfire() {
-    clearTimeout(bargeTimer);
     abortUtterance();
-    if (bargePlayed) {
-      bargePlayed = null;
-      void player?.resume();
-      setState("speaking");
-    }
   },
   onSpeechEnd() {
-    clearTimeout(bargeTimer);
     if (!streaming) return;
-    if (bargePlayed) return finishUtterance({ barge_in: true, ...bargePlayed });
-    if (player?.isSpeaking) return abortUtterance(); // too short to count as an interruption
+    if (player?.isSpeaking) return abortUtterance();
     finishUtterance();
     if (mode === "single") void mic.close().then(() => setState(state));
   },
@@ -202,8 +180,6 @@ async function openMic() {
 }
 
 function interrupt() {
-  clearTimeout(bargeTimer);
-  bargePlayed = null;
   acceptAudio = false; // drop chunks of the cancelled reply still in flight
   link.send({ type: "interrupt", ...(player?.played() ?? { played_seq: 0, played_ms: 0 }) });
   player?.flush();
@@ -250,18 +226,9 @@ link.onEvent = (e) => {
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
-      if (bargePlayed) {
-        bargePlayed = null;
-        player?.flush();
-      }
       if (!e.text) return setState(player?.isSpeaking ? "speaking" : restingState()); // noise: a running reply goes on
       acceptAudio = true;
       setState("thinking");
-      break;
-    case "resume":
-      bargePlayed = null;
-      void player?.resume();
-      setState("speaking");
       break;
     case "done":
       if (state === "thinking" && !player?.isSpeaking) setState(restingState());
@@ -325,15 +292,9 @@ document.addEventListener("fullscreenchange", () => {
 
 // Settings
 const dialog = $<HTMLDialogElement>("settings");
-const bargeInput = $<HTMLInputElement>("opt-barge");
 const metricsInput = $<HTMLInputElement>("opt-metrics");
-bargeInput.checked = settings.bargeIn;
 metricsInput.checked = settings.metrics;
 $("settings-btn").addEventListener("click", () => dialog.showModal());
-bargeInput.addEventListener("change", () => {
-  settings.bargeIn = bargeInput.checked;
-  saveSettings();
-});
 metricsInput.addEventListener("change", () => {
   settings.metrics = metricsInput.checked;
   saveSettings();

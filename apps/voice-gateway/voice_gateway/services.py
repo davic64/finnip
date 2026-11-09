@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 
 import httpx
 
@@ -67,6 +68,7 @@ class EdgeTts:
 
     async def synthesize(self, text):
         import edge_tts
+        text = re.sub(r"\bfinnip\b", "Fínnip", text, flags=re.IGNORECASE)  # stress on the first i
         audio = bytearray()
         async for chunk in edge_tts.Communicate(text, self.voice).stream():
             if chunk["type"] == "audio":
