@@ -72,3 +72,56 @@ class EdgeTts:
             if chunk["type"] == "audio":
                 audio += chunk["data"]
         return bytes(audio)
+
+
+def host_stats(disk_path="/"):
+    """The host's numbers as seen from the container (/proc is the host's without lxcfs)."""
+    import glob
+    import shutil
+    import time
+
+    def cpu_times():
+        with open("/proc/stat") as f:
+            nums = [int(x) for x in f.readline().split()[1:]]
+        return nums[3] + nums[4], sum(nums)  # idle + iowait, total
+
+    idle1, total1 = cpu_times()
+    time.sleep(0.25)
+    idle2, total2 = cpu_times()
+    with open("/proc/meminfo") as f:
+        mem = {k: int(v.split()[0]) for k, v in (line.split(":", 1) for line in f)}
+    temps = []
+    for zone in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
+        with open(zone) as f:
+            temps.append(int(f.read()) / 1000)
+    with open("/proc/uptime") as f:
+        uptime = float(f.read().split()[0])
+    disk = shutil.disk_usage(disk_path)
+    gb = 1024 ** 3
+    return {
+        "cpu": round(100 * (1 - (idle2 - idle1) / max(total2 - total1, 1))),
+        "ram_used": round((mem["MemTotal"] - mem["MemAvailable"]) / 1024 ** 2, 1),
+        "ram_total": round(mem["MemTotal"] / 1024 ** 2, 1),
+        "disk_used": round(disk.used / gb),
+        "disk_total": round(disk.total / gb),
+        "temp": round(max(temps)) if temps and max(temps) > 0 else None,
+        "load": round(os.getloadavg()[0], 2),
+        "cores": os.cpu_count(),
+        "uptime": int(uptime),
+    }
+
+
+class MonitorLight:
+    """Color of the monitors' LED strip through Home Bridge; None while it is off."""
+
+    def __init__(self):
+        self.url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + \
+            "/devices/" + os.environ.get("MONITOR_LIGHT", "light.leds_monitores")
+        self.key = os.environ["BRIDGE_API_KEY"]
+        self.http = httpx.AsyncClient(timeout=5)
+
+    async def rgb(self):
+        resp = await self.http.get(self.url, headers={"Authorization": f"Bearer {self.key}"})
+        resp.raise_for_status()
+        light = resp.json()
+        return light.get("rgb_color") if light.get("state") == "on" else None

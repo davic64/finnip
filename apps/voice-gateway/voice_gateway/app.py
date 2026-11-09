@@ -57,8 +57,10 @@ class TailscaleOnly(BaseHTTPMiddleware):
 class Session:
     """One client connection: buffers PCM, runs one reply turn at a time, handles interruptions."""
 
-    def __init__(self, ws, stt, hermes, tts, recent=None):
+    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
+        self.stats = stats        # async () -> host numbers, or None
+        self.theme = theme if theme is not None else {}  # shared {"rgb": [r, g, b]} of the monitors
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
         self.listening = None     # task transcribing the last utterance
@@ -136,6 +138,8 @@ class Session:
         kind = data.get("type")
         if kind == "hello":
             await self.send({"type": "ready", "version": 1})
+            if self.theme.get("rgb"):
+                await self.send({"type": "theme", "rgb": self.theme["rgb"]})
         elif kind == "utterance_start":
             self.stop_partials()
             self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
@@ -174,6 +178,11 @@ class Session:
         if barge_in and T.is_echo(transcript, self.sentences):
             await self.send({"type": "resume"})
             return
+        busy = self.turn is not None and not self.turn.done()
+        if busy and not barge_in and (not transcript or (self.spoke and T.is_echo(transcript, self.sentences))):
+            # Noise, the chime or Finnip's own voice while a reply runs: never cancel the reply for it.
+            await self.send({"type": "transcript", "text": ""})
+            return
         now = time.monotonic()
         if transcript and transcript == self.recent["text"] and now - self.recent["at"] < DUPLICATE_WINDOW:
             await self.send({"type": "done"})  # same phrase again (duplicated client), Hermes would queue it
@@ -194,6 +203,13 @@ class Session:
     async def reply(self, user_text):
         prompt = T.with_heard_note(user_text, self.pending_heard)
         self.pending_heard, self.sentences, self.spoke = None, [], False
+        if self.stats and T.wants_stats(user_text):
+            try:
+                stats = await self.stats()
+                await self.send({"type": "stats", **stats})
+                prompt = T.stats_note(stats, prompt)
+            except Exception:
+                log.exception("host stats failed")  # Finnip can still measure them with its tools
         queue = asyncio.Queue()
         synth = []
 
@@ -236,19 +252,45 @@ class Session:
                 task.cancel()
 
 
-def create_app(stt=None, hermes=None, tts=None):
+THEME_POLL = 1.0  # seconds between reads of the monitors' LED color (local HTTP, cheap)
+
+
+def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None):
     if stt is None:
-        from .services import EdgeTts, HermesClient, ParakeetStt
+        from .services import EdgeTts, HermesClient, MonitorLight, ParakeetStt, host_stats
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
+        disk = os.environ.get("STATIC_DIR") or "/"
+        stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
+        monitor = MonitorLight() if os.environ.get("BRIDGE_API_KEY") else None
 
     recent = {"text": "", "at": 0.0}
+    theme = {}        # last color the monitors had while on: kept when they turn off
+    sessions = set()
+
+    async def follow_monitors():
+        while True:
+            try:
+                rgb = await monitor.rgb()
+                if rgb and rgb != theme.get("rgb"):
+                    theme["rgb"] = rgb
+                    for session in list(sessions):
+                        with contextlib.suppress(Exception):
+                            await session.send({"type": "theme", "rgb": rgb})
+            except Exception as err:
+                log.warning("monitor color: %s", err)
+            await asyncio.sleep(THEME_POLL)
 
     async def ws_endpoint(ws):
         if not allowed_user(ws.headers):
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
             return
         await ws.accept()
-        await Session(ws, stt, hermes, tts, recent).run()
+        session = Session(ws, stt, hermes, tts, recent, stats, theme)
+        sessions.add(session)
+        try:
+            await session.run()
+        finally:
+            sessions.discard(session)
 
     async def health(request):
         return JSONResponse({"ok": True})
@@ -262,7 +304,10 @@ def create_app(stt=None, hermes=None, tts=None):
     async def lifespan(app):
         if hasattr(stt, "load"):  # load the STT model before the first utterance, not during it
             await asyncio.to_thread(stt.load)
+        poller = asyncio.create_task(follow_monitors()) if monitor else None
         yield
+        if poller:
+            poller.cancel()
 
     # gzip: the VAD's onnxruntime wasm goes from ~15 MB to ~4 MB, which matters over a Tailscale relay.
     middleware = [Middleware(TailscaleOnly), Middleware(GZipMiddleware, minimum_size=1024)]

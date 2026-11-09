@@ -76,3 +76,21 @@ def is_echo(transcript, spoken):
     if t in s:
         return True
     return difflib.SequenceMatcher(None, t, s).find_longest_match().size / len(t) >= ECHO_SIMILARITY
+
+
+# ponytail: keyword match; "memoria" can also mean conversation memory. Move to an intent call if it misfires.
+STATS_WORDS = {"servidor", "server", "ram", "memoria", "cpu", "procesador", "disco", "almacenamiento"}
+
+
+def wants_stats(text):
+    return bool(STATS_WORDS & set(_norm(text).split()))
+
+
+def stats_note(s, user_text):
+    days, rest = divmod(s["uptime"], 86400)
+    temp = f", temperatura {s['temp']} °C" if s["temp"] is not None else ""
+    return (f"[Estado real del servidor medido ahora mismo: CPU {s['cpu']} % ({s['cores']} núcleos, carga "
+            f"{s['load']}), RAM {s['ram_used']} de {s['ram_total']} GB, disco {s['disk_used']} de "
+            f"{s['disk_total']} GB{temp}, encendido hace {days} días y {rest // 3600} horas. "
+            f"La pantalla ya muestra estos números: usa estos datos y no ejecutes comandos para medirlos.]"
+            f"\n\n{user_text}")

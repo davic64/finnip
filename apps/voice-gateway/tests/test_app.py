@@ -206,6 +206,53 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(self.receive_until(ws, "done"), [{"type": "transcript", "text": ""}, {"type": "done"}])
         self.assertEqual(self.hermes.prompts, [])
 
+    def test_noise_or_echo_while_replying_does_not_cancel_the_reply(self):
+        self.hermes.replies.append((["Hola, señor. "], True))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "platícame de ti")
+            self.receive_until(ws, "audio")
+            ws.send_json({"type": "utterance_end"})  # empty: a cough or the chime
+            self.assertEqual(self.receive_until(ws, "transcript")[-1], {"type": "transcript", "text": ""})
+            self.say(ws, "hola señor")  # Finnip heard through the speakers
+            self.assertEqual(self.receive_until(ws, "transcript")[-1], {"type": "transcript", "text": ""})
+            self.assertEqual(self.hermes.closed, 0)
+            self.assertEqual(len(self.hermes.prompts), 1)
+
+    def test_server_question_sends_stats_and_feeds_them_to_hermes(self):
+        stats = {"cpu": 12, "ram_used": 2.9, "ram_total": 7.6, "disk_used": 27, "disk_total": 225,
+                 "temp": 37, "load": 0.34, "cores": 4, "uptime": 90000}
+
+        async def read_stats():
+            return stats
+
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), stats=read_stats))
+        self.hermes.replies += [(["Todo bien."], False), (["Hola."], False)]
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "cómo está el servidor")
+            got = self.receive_until(ws, "done")
+            self.assertIn({"type": "stats", **stats}, got)
+            self.assertIn("RAM 2.9 de 7.6 GB", self.hermes.prompts[0])
+            self.assertTrue(self.hermes.prompts[0].endswith("cómo está el servidor"))
+            self.say(ws, "hola")
+            got = self.receive_until(ws, "done")
+        self.assertFalse(any(isinstance(m, dict) and m["type"] == "stats" for m in got))
+
+    def test_theme_follows_the_monitors_and_survives_them_turning_off(self):
+        class FakeMonitor:
+            colors = [[20, 60, 255], None]
+
+            async def rgb(self):
+                return self.colors.pop(0) if self.colors else None
+
+        with mock.patch("voice_gateway.app.THEME_POLL", 0.01), \
+                TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
+            import time
+            time.sleep(0.1)  # the poller saw the color, then "off"
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                ws.send_json({"type": "hello", "client": "pwa", "version": 1})
+                ws.receive_json()
+                self.assertEqual(ws.receive_json(), {"type": "theme", "rgb": [20, 60, 255]})
+
 
 if __name__ == "__main__":
     unittest.main()

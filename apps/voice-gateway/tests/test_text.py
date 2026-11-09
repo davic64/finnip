@@ -57,5 +57,14 @@ class EchoTest(unittest.TestCase):
         self.assertFalse(T.is_echo("¿qué hora es?", self.SPOKEN))
 
 
+
+class StatsIntentTest(unittest.TestCase):
+    def test_server_questions(self):
+        self.assertTrue(T.wants_stats("¿Cómo está el servidor?"))
+        self.assertTrue(T.wants_stats("cuánta RAM estoy usando"))
+        self.assertFalse(T.wants_stats("apaga la lámpara"))
+        self.assertFalse(T.wants_stats("¿qué hora es?"))
+
+
 if __name__ == "__main__":
     unittest.main()
