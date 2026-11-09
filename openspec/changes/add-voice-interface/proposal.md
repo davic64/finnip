@@ -14,7 +14,7 @@ Una interfaz propia permite enviar el audio en streaming, reproducir la respuest
 
 - Nuevo servicio `voice-gateway` (contenedor nuevo en `compose.yaml`) con una conexión WebSocket por cliente:
   - Recibe audio PCM del cliente.
-  - Lo transcribe con faster-whisper local.
+  - Lo transcribe localmente con NVIDIA Parakeet TDT v3 (ONNX en CPU).
   - Envía el texto a Hermes por su API server, en streaming.
   - Sintetiza cada frase con Edge TTS y la devuelve al cliente en cuanto está lista.
 - Nueva PWA `finnip-app` servida por `voice-gateway`, instalable en iPhone y Mac. Tiene dos modos de micrófono:
@@ -48,8 +48,8 @@ Una interfaz propia permite enviar el audio en streaming, reproducir la respuest
   - `config/voice-gateway.env`: clave del API server y lista de usuarios de Tailscale.
   - Configuración de `tailscale serve` en el host.
 - **Dependencias nuevas:**
-  - Backend: `faster-whisper`, `edge-tts`, un servidor ASGI (`starlette` + `uvicorn`).
+  - Backend: `onnx-asr` (Parakeet), `edge-tts`, un servidor ASGI (`starlette` + `uvicorn`).
   - PWA: Vite y un VAD en el navegador (`@ricky0123/vad-web`).
-- **Recursos:** un segundo modelo faster-whisper `base` en memoria (unos 150 MB) además del de Hermes.
+- **Recursos:** el modelo Parakeet en memoria (~1 GB) además del Whisper de Hermes.
 - **Externo:** Edge TTS usa un servicio de Microsoft no oficial que puede cambiar sin aviso. Telegram queda como respaldo.
 - **Documentación:** `README.md` (arquitectura, despliegue, instalación de la PWA).

@@ -3,9 +3,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
 COPY voice_gateway ./voice_gateway
-# Bake the Whisper model into the image (readable by the runtime user) so start-up needs no download.
+# Bake the STT model into the image (readable by the runtime user) so start-up needs no download.
 ENV HF_HOME=/app/models
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
+RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', quantization='int8')"
 RUN useradd --uid 10001 --no-create-home vgateway && mkdir -p /app/static
 USER vgateway
 ENV STATIC_DIR=/app/static HF_HUB_OFFLINE=1

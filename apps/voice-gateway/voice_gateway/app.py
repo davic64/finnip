@@ -238,8 +238,8 @@ class Session:
 
 def create_app(stt=None, hermes=None, tts=None):
     if stt is None:
-        from .services import EdgeTts, HermesClient, WhisperStt
-        stt, hermes, tts = WhisperStt(), HermesClient(), EdgeTts()
+        from .services import EdgeTts, HermesClient, ParakeetStt
+        stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
 
     recent = {"text": "", "at": 0.0}
 
@@ -260,7 +260,7 @@ def create_app(stt=None, hermes=None, tts=None):
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        if hasattr(stt, "load"):  # load Whisper before the first utterance, not during it
+        if hasattr(stt, "load"):  # load the STT model before the first utterance, not during it
             await asyncio.to_thread(stt.load)
         yield
 

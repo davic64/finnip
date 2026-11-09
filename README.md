@@ -7,7 +7,7 @@ Telegram y controla dispositivos del hogar mediante Home Assistant.
 
 ```
 PWA finnip-app ──wss (tailscale serve)──► voice-gateway ──/v1/responses──┐
-                                           STT faster-whisper · Edge TTS   │
+                                           STT Parakeet · Edge TTS        │
 Telegram ───────────────────────────────────────────────────────────────► Hermes Agent (finnip-brain)
              ├─ plugin finnip_voice ──HTTPS + Bearer──► Fish Audio (respuestas habladas)
              └─ plugin finnip_lights ──HTTP + Bearer──► Home Bridge (finnip-home-bridge)
@@ -50,7 +50,7 @@ Crear con permisos `600`:
 - `data/hermes/.env`: `FISH_API_KEY` de Fish Audio, para la voz de Finnip.
 - `config/voice-gateway.env`: `API_SERVER_KEY` (el mismo de `data/hermes/.env`),
   `ALLOWED_TAILSCALE_USERS` (logins separados por coma) y, opcional,
-  `STT_INITIAL_PROMPT`, `VOICE_MODEL` (por ejemplo `claude-haiku-5-5`) y `TTS_VOICE`.
+  `HERMES_CONVERSATION`, `VOICE_MODEL` (por ejemplo `claude-haiku-5-5`) y `TTS_VOICE`.
 
 `HA_URL` y `FINNIP_BRIDGE_URL` se definen en `compose/compose.yaml`.
 

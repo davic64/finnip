@@ -39,9 +39,9 @@ El porqué está en proposal.md, y los requisitos en `specs/voice-interface/spec
 
 Es un servicio nuevo (`apps/voice-gateway/`, Starlette + uvicorn) en su propio contenedor.
 
-- **Python en vez de TypeScript:** faster-whisper y edge-tts son bibliotecas de Python. En TypeScript haría falta un segundo proceso para STT y TTS.
+- **Python en vez de TypeScript:** el STT (Parakeet vía `onnx-asr`) y edge-tts son bibliotecas de Python. En TypeScript haría falta un segundo proceso para STT y TTS.
 - **Separado de Hermes en vez de un plugin de plataforma:** Hermes no está pensado para audio en tiempo real. Un servicio aparte se reinicia y se prueba sin tocar el agente, y el ESP32 se conecta al mismo punto.
-- **Costo:** un segundo modelo faster-whisper `base` en memoria (unos 150 MB). Es aceptable en el EliteBook.
+- **STT: NVIDIA Parakeet TDT v3** (multilingüe, int8 ONNX en CPU, licencia CC-BY-4.0). Medido el 2026-11-09 con notas de voz reales del usuario: calidad igual a Whisper large-v3-turbo y 0.4–0.6 s por frase corta, contra ~0.85 s con errores de Whisper `base`, ~2.6 s de `small` y ~16 s de `large-v3-turbo`. Ocupa ~1 GB de RAM y la imagen pesa ~1.6 GB.
 
 ### 2. Hermes vía `/v1/responses` con streaming y una conversación fija
 
@@ -75,7 +75,7 @@ La síntesis de la frase N+1 corre mientras suena la N. El cliente reproduce los
 - La PWA detecta voz con `@ricky0123/vad-web` (Silero v5 en el navegador).
 - Al empezar la voz manda `utterance_start`, los ~300 ms previos (para no perder la primera sílaba) y luego cada frame PCM16 mono de 16 kHz **en vivo**, mientras el usuario habla.
 - **Transcripción en vivo:** mientras llega audio, el servidor retranscribe lo acumulado cada ~0.5 s (si hay al menos 0.5 s nuevos) y envía `partial`. La PWA lo muestra como texto que se va escribiendo.
-- Al detectar el final manda `utterance_end` y el servidor hace la transcripción final con faster-whisper (`language: es`, `vad_filter`, el mismo `initial_prompt` que Hermes). Si el VAD descarta el segmento (ruido corto), la PWA manda `utterance_abort` y el servidor lo tira.
+- Al detectar el final manda `utterance_end` y el servidor hace la transcripción final con Parakeet. Si el VAD descarta el segmento (ruido corto), la PWA manda `utterance_abort` y el servidor lo tira.
 - **Costo:** cada parcial retranscribe todo el audio acumulado, así que el CPU crece con frases largas. Para frases de voz normales (menos de 10 s) es aceptable en el EliteBook.
 - **Pausas a media frase:** el VAD da por terminada una frase tras 0.6 s de silencio. Si el usuario sigue hablando antes de que Finnip diga algo (dentro de 8 s), el servidor cancela la respuesta en curso y envía a Hermes las dos partes como un solo mensaje. Responde `transcript` con `"merged": true` y la PWA junta ambas en una sola burbuja. Una vez que Finnip empezó a hablar, una frase nueva es una interrupción (decisión 9), no una continuación.
 - **Transcripción final inmediata:** en cuanto el final del audio queda en silencio (~0.2 s), el servidor transcribe de inmediato. Si al llegar `utterance_end` todo lo posterior es silencio, ese texto es la transcripción final y no se repite el trabajo (de ~0.9 s a ~0.05 s, medido).
@@ -163,7 +163,7 @@ Se pausa en vez de cortar porque, si se cancelara de inmediato, un falso disparo
 - **Interrupción por ruido** (otra persona hablando, la tele): el umbral alto lo reduce. Si en algún lugar molesta, se apaga la interrupción por voz y queda el toque.
 - **Edge TTS no oficial:** si deja de funcionar, se cambia de proveedor en `voice-gateway` sin tocar el protocolo. Piper ya se midió en el servidor como alternativa local (2–3 s).
 - **iOS:** Safari suspende el audio y el micrófono de una PWA en segundo plano, así que la conversación solo funciona con la app en primer plano.
-- **Doble modelo Whisper:** son unos 150 MB más de RAM. Si molesta, Hermes podría volver a STT por API en Telegram.
+- **Dos motores de STT:** Hermes sigue con Whisper `base` para Telegram y `voice-gateway` usa Parakeet (~1 GB de RAM). Más adelante Telegram podría usar Parakeet también.
 - **Exponer el API server de Hermes a la red de Compose:** queda protegido por `API_SERVER_KEY` y sin puerto publicado en el host.
 
 ## Migration Plan
