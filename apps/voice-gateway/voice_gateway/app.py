@@ -60,7 +60,7 @@ class Session:
     def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
         self.stats = stats        # async () -> host numbers, or None
-        self.calendar = calendar  # GoogleCalendar-like (async events()), or None
+        self.calendar = calendar  # ICloudCalendar-like (async events()), or None
         self.theme = theme if theme is not None else {}  # shared {"rgb": [r, g, b]} of the monitors
         self.audio = bytearray()
         self.turn = None          # task streaming the current reply
@@ -274,13 +274,13 @@ THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action
 
 def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None):
     if stt is None:
-        from .services import EdgeTts, GoogleCalendar, HermesClient, MonitorLight, ParakeetStt, host_stats
+        from .services import EdgeTts, HermesClient, ICloudCalendar, MonitorLight, ParakeetStt, host_stats
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
         disk = os.environ.get("STATIC_DIR") or "/"
         stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
         monitor = MonitorLight() if os.environ.get("BRIDGE_API_KEY") else None
-        token = os.environ.get("GOOGLE_TOKEN_FILE", "")
-        calendar = GoogleCalendar(token) if token and os.path.exists(token) else None
+        plugin = os.environ.get("CALENDAR_PLUGIN", "")
+        calendar = ICloudCalendar(plugin) if plugin and os.path.exists(plugin) and os.environ.get("CALDAV_CALENDAR_URL") else None
 
     recent = {"text": "", "at": 0.0}
     theme = {}        # last color the monitors had while on: kept when they turn off

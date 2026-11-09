@@ -99,10 +99,10 @@ class RemindersTest(unittest.TestCase):
         from datetime import datetime
         now = datetime.fromisoformat("2026-11-09T12:00:00-06:00")
         events = [
-            {"summary": "Pagar", "start": {"dateTime": "2026-11-10T05:30:00+00:00"}},
-            {"summary": "Junta", "start": {"dateTime": "2026-11-10T08:00:00-06:00"}},
-            {"summary": "Viaje", "start": {"date": "2026-11-20"}},
-            {"start": {"date": "2026-11-09"}},
+            {"summary": "Pagar", "start": "2026-11-10T05:30:00+00:00", "all_day": False},
+            {"summary": "Junta", "start": "2026-11-10T08:00:00-06:00", "all_day": False},
+            {"summary": "Viaje", "start": "2026-11-20", "all_day": True},
+            {"start": "2026-11-09", "all_day": True},
         ]
         self.assertEqual(T.calendar_items(events, now), [
             {"name": "Pagar", "when": "Hoy · 23:30"},

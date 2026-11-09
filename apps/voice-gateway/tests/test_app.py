@@ -251,7 +251,7 @@ class GatewayTest(unittest.TestCase):
     def test_reminders_question_shows_them_before_the_reply(self):
         class FakeCalendar:
             async def events(self):
-                return [{"summary": "Pagar luz", "start": {"dateTime": "2030-01-02T09:00:00-06:00"}}]
+                return [{"summary": "Pagar luz", "start": "2030-01-02T09:00:00-06:00", "all_day": False}]
 
         client = TestClient(create_app(self.stt, self.hermes, FakeTts(), calendar=FakeCalendar()))
         self.hermes.replies += [(["Tiene uno."], False), (["Listo."], False)]

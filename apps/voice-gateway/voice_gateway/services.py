@@ -62,36 +62,18 @@ class HermesClient:
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 
 
-class GoogleCalendar:
-    """Upcoming events of the user's primary Google Calendar, read only.
-    The OAuth token file is Hermes' (calendar scope), mounted read only; the access token is refreshed
-    in memory and never written back."""
-    API = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+class ICloudCalendar:
+    """Agenda panel: loads the finnip-calendar Hermes plugin (mounted read only) and uses its CalDAV
+    reader, so iCloud is spoken to by one piece of code. Credentials come from the environment."""
     def __init__(self, path):
-        self.path = path
-        self.http = httpx.AsyncClient(timeout=10)
-        self.access, self.expires = None, 0.0
-    async def token(self):
-        import time
-        if self.access and time.monotonic() < self.expires - 60:
-            return self.access
-        with open(self.path) as f:
-            saved = json.load(f)
-        resp = await self.http.post(saved.get("token_uri") or "https://oauth2.googleapis.com/token", data={
-            "grant_type": "refresh_token", "refresh_token": saved["refresh_token"],
-            "client_id": saved["client_id"], "client_secret": saved["client_secret"]})
-        resp.raise_for_status()
-        data = resp.json()
-        self.access, self.expires = data["access_token"], time.monotonic() + data.get("expires_in", 3600)
-        return self.access
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_calendar", path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
     async def events(self, days=7, limit=8):
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
-        params = {"timeMin": now.isoformat(), "timeMax": (now + timedelta(days=days)).isoformat(),
-                  "singleEvents": "true", "orderBy": "startTime", "maxResults": str(limit)}
-        resp = await self.http.get(self.API, params=params, headers={"Authorization": f"Bearer {await self.token()}"})
-        resp.raise_for_status()
-        return resp.json().get("items", [])
+        from datetime import datetime, timedelta
+        now = datetime.now(self.plugin.TZ)
+        return await asyncio.to_thread(self.plugin.list_events, now, now + timedelta(days=days), limit)
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")

@@ -49,15 +49,14 @@ services:
       - ../config/voice-gateway.env
     environment:
       HERMES_URL: http://hermes:8642
-      GOOGLE_TOKEN_FILE: /run/secrets/google_token.json
-    # Reads Hermes' Google token (group 10000, mode 640) to show calendar events; read only.
-    group_add: ["10000"]
+      # The agenda panel reuses the finnip-calendar plugin's CalDAV reader (iCloud credentials in the env file).
+      CALENDAR_PLUGIN: /opt/finnip-calendar/__init__.py
     # Host loopback only: reached through `tailscale serve`, never directly from the LAN.
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
       # The built PWA, mounted so a UI rebuild is live without restarting the container.
       - ../apps/finnip-app/dist:/app/static:ro
-      - ../data/hermes/google_token.json:/run/secrets/google_token.json:ro
+      - ../apps/finnip-calendar:/opt/finnip-calendar:ro
     depends_on:
       - hermes

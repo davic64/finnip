@@ -110,24 +110,23 @@ TZ = ZoneInfo("America/Mexico_City")
 DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 def calendar_items(events, now=None):
-    """Google Calendar events (already sorted by start) as [{"name", "when"}] in Mexico City time."""
+    """finnip-calendar events (sorted by start) as [{"name", "when"}] in Mexico City time."""
     today = (now or datetime.now(TZ)).astimezone(TZ).date()
     def day(d):
         days = (d - today).days
         return "Hoy" if days == 0 else "Mañana" if days == 1 else f"{DAYS[d.weekday()]} {d.day} {MONTHS[d.month - 1]}"
     items = []
     for event in events:
-        start = event.get("start", {})
-        if "dateTime" in start:
-            at = datetime.fromisoformat(start["dateTime"]).astimezone(TZ)
-            when = f"{day(at.date())} · {at:%H:%M}"
+        if event.get("all_day"):
+            when = f"{day(date.fromisoformat(event['start']))} · todo el día"
         else:
-            when = f"{day(date.fromisoformat(start['date']))} · todo el día"
+            at = datetime.fromisoformat(event["start"]).astimezone(TZ)
+            when = f"{day(at.date())} · {at:%H:%M}"
         items.append({"name": event.get("summary") or "Sin título", "when": when})
     return items
 def reminders_note(items, user_text):
     listed = "; ".join(f"{i['name']} ({i['when']})" for i in items) or "ninguno"
-    return (f"[Eventos y recordatorios del Google Calendar del usuario en los próximos 7 días, leídos ahora mismo: "
+    return (f"[Eventos y recordatorios del calendario de iCloud del usuario en los próximos 7 días, leídos ahora mismo: "
             f"{listed}. La pantalla ya los muestra: usa estos datos y no llames herramientas para listarlos.]"
             f"\n\n{user_text}")
 WAKE_WORD = "finnip"
