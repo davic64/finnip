@@ -4,7 +4,8 @@ import type { ActionName } from "./actions.js";
 export const DEVICE_LABEL = "finnip";
 
 // Domains Finnip may control. A labeled entity outside this list (lock, alarm…) is ignored.
-export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate", "media_player"] as const;
+// script: the "modos" (Modo estudio, Modo cine…), edited in Home Assistant and only run from here.
+export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate", "media_player", "script"] as const;
 export type Domain = (typeof ALLOWED_DOMAINS)[number];
 
 export interface Entity {
@@ -63,6 +64,8 @@ function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): Ac
     switch (domain) {
         case "switch":
             return ["on", "off"];
+        case "script":
+            return ["run"];
         case "light": {
             const modes = strings(attributes.supported_color_modes);
             const capabilities: ActionName[] = ["on", "off"];
@@ -95,6 +98,7 @@ export function toDevice(entity: Entity, domain: Domain): Device {
     };
     switch (domain) {
         case "switch":
+        case "script":
             return base;
         case "light": {
             const rawBrightness = num(attributes.brightness);

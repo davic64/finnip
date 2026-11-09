@@ -193,6 +193,7 @@ class FastPathTest(unittest.TestCase):
             "Reanuda la música": ("resume", None),
             "sigue la música": ("resume", None),
             "Finnip, reproduce algo de Queen": ("play", {"query": "algo de Queen"}),
+            "reproduce música de los 80": ("play", {"query": "música de los 80"}),
             "Reproduce Iron Man. De Black Sabbath.": ("play", {"query": "Iron Man De Black Sabbath"}),
             "volumen al 20 por ciento": ("volume", {"volume": 20}),
             "Reproduce Bohemian Rhapsody de Queen en Alexa": ("play", {"query": "Bohemian Rhapsody de Queen"}),
@@ -202,7 +203,10 @@ class FastPathTest(unittest.TestCase):
         for message, expected in cases.items():
             self.assertEqual(plugin.parse_music_order(message), expected, message)
         for message in ("para mañana tengo junta", "¿qué está sonando?", "sigue explicándome lo de ayer por favor",
-                        "volumen 300", "reproduce", "continúa con la explicación"):
+                        "volumen 300", "reproduce", "continúa con la explicación",
+                        "Reproduce la música que tú quieras", "reproduce algo", "Reprodúceme lo que sea", "reproduce algo bueno",
+                        "Reproduce la música que quieras para hacer el aseo en mi cuarto", "reproduce música para concentrarme",
+                        "reproduce algo tranquilo para programar", "Reproduce canciones para trabajar"):
             self.assertIsNone(plugin.parse_music_order(message), message)
 
     def test_music_fast_path_runs_on_the_only_speaker(self):
@@ -229,5 +233,35 @@ class FastPathTest(unittest.TestCase):
                 out = plugin.fast_path_hook(user_message="Continúa.")
             self.assertEqual(("POST", "/devices/media_player.echo/resume") in sent, resumed, state)
             self.assertEqual(out is not None, resumed, state)
+class ModeTest(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(plugin.parse_mode_order("Modo estudio."), "modo estudio")
+        self.assertEqual(plugin.parse_mode_order("Finnip, activa el modo trabajo profundo"), "modo trabajo profundo")
+        self.assertEqual(plugin.parse_mode_order("pon modo cálido por favor"), "modo calido")
+        self.assertEqual(plugin.parse_mode_order("Voy a ver una película"), "modo cine")
+        self.assertEqual(plugin.parse_mode_order("Modio Trabajo Profundo."), "modo trabajo profundo")
+        self.assertIsNone(plugin.parse_mode_order("¿qué modo tienes?"))
+        self.assertIsNone(plugin.parse_mode_order("explícame el modo subjuntivo en inglés por favor ahora"))
+
+    def test_runs_the_script_and_lets_the_model_pick_music(self):
+        calls = []
+        def bridge(method, path, body=None):
+            calls.append((method, path))
+            if path == "/devices":
+                return {"devices": [{"id": "script.modo_calido", "name": "Modo cálido", "domain": "script"},
+                                    {"id": "script.modo_cine", "name": "Modo cine", "domain": "script"},
+                                    {"id": "light.lampara", "name": "Lámpara", "domain": "light"}]}
+            return {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            warm = plugin.fast_path_hook(user_message="Activa el modo cálido")
+            movie = plugin.fast_path_hook(user_message="vamos a ver una peli")
+            unknown = plugin.fast_path_hook(user_message="modo fiesta")
+        self.assertIn(("POST", "/devices/script.modo_calido/run"), calls)
+        self.assertIn(("POST", "/devices/script.modo_cine/run"), calls)
+        self.assertIn("reprodúcelo", warm["context"])
+        self.assertIn("no lleva música", movie["context"])
+        self.assertIsNone(unknown)
+
+
 if __name__ == "__main__":
     unittest.main()

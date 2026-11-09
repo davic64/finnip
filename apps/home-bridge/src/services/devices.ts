@@ -40,7 +40,7 @@ export function createDevicesService(homeAssistant: HomeAssistantService, settle
                 ...action.data?.(input),
             });
             let actual = await read(device.id, device.domain);
-            for (let i = 0; i < SETTLE_TRIES && !action.confirm(input, actual); i++) {
+            for (let i = 0; i < SETTLE_TRIES && !action.confirm(input, actual, device); i++) {
                 await sleep(settleMs);
                 // Alexa only polls Amazon now and then: ask for a fresh read instead of waiting for it.
                 if (device.domain === "media_player") {
@@ -52,7 +52,7 @@ export function createDevicesService(homeAssistant: HomeAssistantService, settle
                 success: true,
                 action: name,
                 device: device.name,
-                confirmed: action.confirm(input, actual),
+                confirmed: action.confirm(input, actual, device),
                 ...(Object.keys(input).length > 0 ? { requested: input } : {}),
                 actual,
             };

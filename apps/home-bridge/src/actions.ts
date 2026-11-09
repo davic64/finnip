@@ -9,8 +9,8 @@ export interface ActionDef<I> {
     data?(input: I): Record<string, unknown>;
     // Device-specific limits a static schema cannot express. Returns the error message.
     check?(input: I, device: Device): string | undefined;
-    // Whether the state read after the command matches what was asked.
-    confirm(input: I, actual: Device): boolean;
+    // Whether the state read after the command matches what was asked (before: the state it started from).
+    confirm(input: I, actual: Device, before: Device): boolean;
 }
 
 const define = <I>(def: ActionDef<I>) => def;
@@ -27,6 +27,8 @@ const PURCHASE = /(?<![\p{L}\p{N}])(compr|cómpr|orden|ordén|pid|píd|pedir|ped
 
 export const ACTIONS = {
     on: define({ input: noInput, service: "turn_on", confirm: (_, actual) => actual.state === "on" }),
+    // script.turn_on starts the script without waiting; it may already be "off" when read back.
+    run: define({ input: noInput, service: "turn_on", confirm: () => true }),
     off: define({ input: noInput, service: "turn_off", confirm: (_, actual) => actual.state === "off" }),
     brightness: define({
         input: z.object({ brightness: percent }),
@@ -78,7 +80,9 @@ export const ACTIONS = {
         // as a playlist name and failed; Alexa's own language understanding finds songs, artists and playlists.
         data: (input) => ({ media_content_type: "custom", media_content_id: `reproduce ${input.query} en ${MUSIC_SERVICE}` }),
         check: (input) => PURCHASE.test(input.query) ? "Purchases through Alexa are not allowed" : undefined,
-        confirm: (_, actual) => actual.state === "playing",
+        // Already playing: "playing" proves nothing until the song changes (Alexa takes a few seconds).
+        confirm: (_, actual, before) => actual.state === "playing" &&
+            (before.state !== "playing" || actual.media_title !== before.media_title),
     }),
     command: define({
         input: z.object({ text: words }),

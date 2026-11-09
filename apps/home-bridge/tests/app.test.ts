@@ -346,6 +346,21 @@ it.each([
     expect(() => buildApp({ env: invalidEnv, logger: false })).toThrow();
 });
 
+describe("modes (Home Assistant scripts)", () => {
+    const MODE = entity("script.modo_estudio", "off", { friendly_name: "Modo estudio" });
+    it("runs a labeled script and nothing else on it", async () => {
+        const { ha, app } = setup({ entities: [MODE, entity("script.borrar_todo", "off")], labeled: ["script.modo_estudio"] });
+        const list = (await app.inject({ method: "GET", url: "/devices", headers })).json();
+        expect(list.devices).toEqual([expect.objectContaining({ id: "script.modo_estudio", domain: "script", capabilities: ["run"] })]);
+        const run = await app.inject({ method: "POST", url: "/devices/script.modo_estudio/run", headers });
+        expect(run.statusCode).toBe(200);
+        expect(ha.serviceCalls().map((call) => [call.path, call.body]))
+            .toEqual([["/api/services/script/turn_on", { entity_id: "script.modo_estudio" }]]);
+        expect((await app.inject({ method: "POST", url: "/devices/script.modo_estudio/off", headers })).statusCode).toBe(400);
+        expect((await app.inject({ method: "POST", url: "/devices/script.borrar_todo/run", headers })).statusCode).toBe(404);
+    });
+});
+
 describe("Alexa speakers", () => {
     const ECHO = entity("media_player.echo", "idle", { friendly_name: "Echo Dave", volume_level: 0.3 });
     const alexa = (options: Partial<Parameters<typeof fakeHomeAssistant>[0]> = {}) =>
@@ -393,6 +408,21 @@ describe("Alexa speakers", () => {
             expect(response.statusCode).toBe(400);
             expect(ha.serviceCalls()).toEqual([]);
         });
+
+    it("waits for the new song when something else was already playing", async () => {
+        const old = { ...ECHO, state: "playing", attributes: { ...ECHO.attributes, media_title: "Come Away With Me" } };
+        const { ha, app } = alexa({
+            entities: [old],
+            onService: (_d, service, _b, entities) => {
+                if (service === "update_entity") set(entities, "media_player.echo", "playing", { media_title: "Says" });
+            },
+        });
+        const response = await app.inject({
+            method: "POST", url: "/devices/media_player.echo/play", headers, payload: { query: "Nils Frahm" },
+        });
+        expect(response.json()).toMatchObject({ confirmed: true, actual: { media_title: "Says" } });
+        expect(ha.serviceCalls().some((call) => call.path === "/api/services/homeassistant/update_entity")).toBe(true);
+    });
 
     it("sets the volume as a 0-1 level and confirms it", async () => {
         const { ha, app } = alexa({ onService: (_d, _s, _b, entities) => set(entities, "media_player.echo", "idle", { volume_level: 0.5 }) });
