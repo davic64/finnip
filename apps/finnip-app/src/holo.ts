@@ -57,9 +57,12 @@ const VERT = /* glsl */ `
     float n = sin(p.x * 4.0 + uTime * 1.3) * sin(p.y * 4.0 + uTime * 1.1) * sin(p.z * 4.0 + uTime * 0.9);
     p *= 1.0 + n * (0.03 + uLevel * 0.32) + uLevel * 0.06 + uSpread * aRand;
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
-    gl_PointSize = uSize * (0.5 + aRand) / -mv.z;
+    // Min 3px: sub-pixel points shimmer (twinkle) as the sphere turns, since there is no AA and 1x pixels.
+    gl_PointSize = max(uSize * (0.5 + aRand) / -mv.z, 3.0);
     gl_Position = projectionMatrix * mv;
-    vAlpha = 0.12 + 0.5 * aRand;
+    // Back half faded: there front and back points overlap and their additive glow sparkles.
+    float facing = (normalMatrix * normalize(position)).z;
+    vAlpha = (0.12 + 0.5 * aRand) * mix(0.12, 1.0, smoothstep(-0.2, 0.3, facing));
   }`;
 const FRAG = /* glsl */ `
   uniform vec3 uColor;
@@ -86,7 +89,6 @@ export class Holo {
   private rings: THREE.Object3D[] = [];
   private scanner: THREE.LineSegments;
   private wire: THREE.LineSegments;
-  private dust: THREE.Points;
   private level = 0;
   private energy = 0.3;
   private spin = 0;
@@ -140,13 +142,6 @@ export class Holo {
     this.scanner = new THREE.LineSegments(arcs(1.74, [[0, 0.9]]), line(0.95));
     this.core.add(this.scanner);
 
-    // Floating dust around the hologram.
-    const dustPos = new Float32Array(500 * 3).map(() => (Math.random() - 0.5) * 9);
-    this.dust = new THREE.Points(
-      new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(dustPos, 3)),
-      new THREE.PointsMaterial({ color: this.color, size: 0.018, opacity: 0.35, ...additive }),
-    );
-    this.scene.add(this.dust);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -189,7 +184,8 @@ export class Holo {
     // ponytail: fixed per-state frame caps; drop to on-demand rendering if idle still costs too much.
     const now = performance.now();
     const idle = this.state === "off";
-    if (now - this.lastRender < (idle ? 50 : 16)) return; // ~20 fps idle, <=60 fps active (ProMotion runs 120)
+    const cap = idle ? 50 : this.state === "listening" ? 33 : 16; // ~20 fps idle, ~30 fps listening, <=60 fps thinking/speaking
+    if (now - this.lastRender < cap) return; // ProMotion runs rAF at 120
     this.lastRender = now;
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const t = this.clock.elapsedTime;
@@ -208,7 +204,6 @@ export class Holo {
       m.color.copy(this.color); // materials copy the color, they do not share it
       m.opacity = m.userData.base * this.energy;
     }
-    (this.dust.material as THREE.PointsMaterial).color.copy(this.color);
 
     const target = this.scale * (this.shrink ? 0.58 : 1) * (1 + this.level * 0.08);
     this.core.scale.setScalar(this.core.scale.x + (target - this.core.scale.x) * 0.08);
@@ -220,7 +215,6 @@ export class Holo {
     this.rings[3].rotation.z = this.spin * 0.25;
     this.scanner.rotation.z = -t * (s === "thinking" ? 5 : 1.2);
     this.scanner.visible = s !== "off";
-    this.dust.rotation.y = t * 0.02;
     this.composer.render();
   }
 }
