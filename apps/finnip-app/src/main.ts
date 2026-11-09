@@ -4,6 +4,7 @@ import { Mic } from "./mic";
 import { Player } from "./player";
 import { Holo } from "./holo";
 import { Hud } from "./hud";
+import { showCard, showReminders } from "./cards";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -255,6 +256,12 @@ link.onEvent = (e) => {
       break;
     case "theme":
       setTheme(e.rgb);
+      break;
+    case "device":
+      showCard(e);
+      break;
+    case "reminders":
+      if (acceptAudio) showReminders(e.items);
       break;
     case "stats":
       if (acceptAudio) hud.show(e);

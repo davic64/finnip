@@ -60,15 +60,6 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.6; }
 
 /* Stage: the canvas draws the hologram centered on #orb, which is only the tap target. */
 .stage { position: relative; display: grid; place-items: center; min-height: 0; }
-.stage::before {
-  content: "";
-  position: absolute;
-  inset: 4% 0;
-  pointer-events: none;
-  border: 1px solid var(--line);
-  mask: linear-gradient(#000 0 0) top left / 18px 18px no-repeat, linear-gradient(#000 0 0) top right / 18px 18px no-repeat,
-    linear-gradient(#000 0 0) bottom left / 18px 18px no-repeat, linear-gradient(#000 0 0) bottom right / 18px 18px no-repeat;
-}
 .orb {
   width: min(78vw, 70%, 420px);
   aspect-ratio: 1;
@@ -81,6 +72,31 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.6; }
   outline-offset: 6px;
 }
 
+/* Action cards (cards.ts): top right of the stage; they only fade and slide, never flash. */
+.cards { position: absolute; top: 6%; right: 4%; display: grid; gap: 8px; justify-items: end; pointer-events: none; }
+.card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--glass);
+  font: 12px var(--mono);
+  letter-spacing: 0.08em;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.4s, transform 0.4s;
+}
+.card.on { opacity: 1; transform: none; }
+.card i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--muted); }
+.card span { text-transform: uppercase; color: var(--muted); }
+.card b { font-weight: 600; color: var(--holo); }
+.card.list { display: grid; gap: 6px; justify-items: start; width: min(340px, 80vw); padding: 12px 16px; }
+.card.list h3 { margin: 0 0 2px; font: inherit; letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); }
+.card.list p { margin: 0; display: grid; gap: 1px; min-width: 0; max-width: 100%; }
+.card.list p span { text-transform: none; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.list .empty { color: var(--muted); }
 .readout {
   position: absolute;
   bottom: 5%;

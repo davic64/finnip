@@ -62,6 +62,12 @@ class HermesClient:
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 
 
+    async def jobs(self):
+        """Active scheduled jobs (reminders, timed device actions)."""
+        url = self.url.removesuffix("/v1/responses") + "/api/jobs"
+        resp = await self.http.get(url, headers={"Authorization": f"Bearer {self.key}"})
+        resp.raise_for_status()
+        return resp.json()["jobs"]
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
@@ -114,16 +120,13 @@ def host_stats(disk_path="/"):
 
 
 class MonitorLight:
-    """Color of the monitors' LED strip through Home Bridge; None while it is off."""
-
+    """Devices through Home Bridge (read only); `id` is the monitors' LED strip that sets the UI color."""
     def __init__(self):
-        self.url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + \
-            "/devices/" + os.environ.get("MONITOR_LIGHT", "light.leds_monitores")
+        self.url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + "/devices"
+        self.id = os.environ.get("MONITOR_LIGHT", "light.leds_monitores")
         self.key = os.environ["BRIDGE_API_KEY"]
         self.http = httpx.AsyncClient(timeout=5)
-
-    async def rgb(self):
+    async def devices(self):
         resp = await self.http.get(self.url, headers={"Authorization": f"Bearer {self.key}"})
         resp.raise_for_status()
-        light = resp.json()
-        return light.get("rgb_color") if light.get("state") == "on" else None
+        return resp.json()["devices"]

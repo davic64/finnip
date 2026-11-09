@@ -219,6 +219,13 @@ class Session:
                 prompt = T.stats_note(stats, prompt)
             except Exception:
                 log.exception("host stats failed")  # Finnip can still measure them with its tools
+        if T.wants_reminders(user_text):
+            try:
+                items = T.reminder_items(await self.hermes.jobs())
+                await self.send({"type": "reminders", "items": items})  # on screen before the voice arrives
+                prompt = T.reminders_note(items, prompt)
+            except Exception:
+                log.exception("reminders failed")  # Finnip can still list them with its tools
         queue = asyncio.Queue()
         synth = []
 
@@ -261,7 +268,7 @@ class Session:
                 task.cancel()
 
 
-THEME_POLL = 1.0  # seconds between reads of the monitors' LED color (local HTTP, cheap)
+THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action cards (local HTTP, cheap)
 
 
 def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None):
@@ -276,19 +283,30 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None):
     theme = {}        # last color the monitors had while on: kept when they turn off
     sessions = set()
 
+    seen = {}         # device id -> (state, brightness, rgb) from the previous poll
+    async def broadcast(obj):
+        for session in list(sessions):
+            with contextlib.suppress(Exception):
+                await session.send(obj)
     async def follow_monitors():
         while True:
             try:
-                rgb = await monitor.rgb()
-                if rgb and rgb != theme.get("rgb"):
-                    theme["rgb"] = rgb
-                    for session in list(sessions):
-                        with contextlib.suppress(Exception):
-                            await session.send({"type": "theme", "rgb": rgb})
+                for device in await monitor.devices():
+                    on = device.get("state") == "on"
+                    rgb = device.get("rgb_color")
+                    if device["id"] == monitor.id and on and rgb and rgb != theme.get("rgb"):
+                        theme["rgb"] = rgb
+                        await broadcast({"type": "theme", "rgb": rgb})
+                    key = (device.get("state"), device.get("brightness"), rgb)
+                    # A change since the last poll (not the first sight) becomes an action card in the UI.
+                    if device["id"] in seen and seen[device["id"]] != key:
+                        name = "Monitores" if device["id"] == monitor.id else device.get("name", "")
+                        await broadcast({"type": "device", "id": device["id"], "name": name, "on": on,
+                                         "brightness": device.get("brightness"), "rgb": rgb})
+                    seen[device["id"]] = key
             except Exception as err:
-                log.warning("monitor color: %s", err)
+                log.warning("devices: %s", err)
             await asyncio.sleep(THEME_POLL)
-
     async def ws_endpoint(ws):
         if not allowed_user(ws.headers):
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403

@@ -10,7 +10,9 @@ export type ServerEvent =
   | { type: "resume" }
   | { type: "wake" }
   | { type: "theme"; rgb: [number, number, number] }
+  | { type: "device"; id: string; name: string; on: boolean; brightness: number | null; rgb: [number, number, number] | null }
   | ({ type: "stats" } & Stats)
+  | { type: "reminders"; items: { name: string; when: string }[] }
   | { type: "done" }
   | { type: "error"; message: string };
 

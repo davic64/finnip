@@ -2,6 +2,8 @@
 import difflib
 import re
 import unicodedata
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 SENTENCE_END = re.compile(r"(?<=[.!?:;])\s+")
 FIRST_CLAUSE_END = re.compile(r"(?<=,)\s+")
@@ -96,6 +98,35 @@ def stats_note(s, user_text):
             f"\n\n{user_text}")
 
 
+# ponytail: keyword match; a phrase that also creates or cancels one goes to Hermes without the panel.
+REMINDER_WORDS = {"recordatorio", "recordatorios", "alarma", "alarmas"}
+REMINDER_CHANGES = {"pon", "ponme", "crea", "creame", "agrega", "agregame", "anade", "programa", "programame",
+                    "cancela", "borra", "elimina", "quita", "cambia", "mueve", "pospon"}
+def wants_reminders(text):
+    words = set(_norm(text).split())
+    return bool(REMINDER_WORDS & words) and not REMINDER_CHANGES & words
+TZ = ZoneInfo("America/Mexico_City")
+DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+DAILY = re.compile(r"^\d+ \d+ \* \* \*$")
+def reminder_items(jobs, now=None):
+    """Hermes' scheduled jobs (GET /api/jobs) as [{"name", "when"}], soonest first, in Mexico City time."""
+    today = (now or datetime.now(TZ)).astimezone(TZ).date()
+    items = []
+    for job in jobs:
+        if not job.get("enabled", True) or not job.get("next_run_at"):
+            continue
+        at = datetime.fromisoformat(job["next_run_at"]).astimezone(TZ)
+        days = (at.date() - today).days
+        day = "Hoy" if days == 0 else "Mañana" if days == 1 else f"{DAYS[at.weekday()]} {at.day} {MONTHS[at.month - 1]}"
+        expr = (job.get("schedule") or {}).get("expr", "")
+        repeat = " · diario" if DAILY.match(expr) else " · se repite" if expr else ""
+        items.append((at, {"name": job.get("name") or "Sin nombre", "when": f"{day} · {at:%H:%M}{repeat}"}))
+    return [item for _, item in sorted(items, key=lambda pair: pair[0])]
+def reminders_note(items, user_text):
+    listed = "; ".join(f"{i['name']} ({i['when']})" for i in items) or "ninguno"
+    return (f"[Recordatorios programados según el sistema, leídos ahora mismo: {listed}. "
+            f"La pantalla ya los muestra: usa estos datos y no uses herramientas para listarlos.]\n\n{user_text}")
 WAKE_WORD = "finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.

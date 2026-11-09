@@ -23,6 +23,10 @@ class FakeStt:
 class FakeHermes:
     def __init__(self):
         self.prompts, self.replies, self.closed = [], [], 0
+        self.scheduled = []
+
+    async def jobs(self):
+        return self.scheduled
 
     async def stream(self, text):
         self.prompts.append(text)
@@ -248,12 +252,30 @@ class GatewayTest(unittest.TestCase):
             got = self.receive_until(ws, "done")
         self.assertFalse(any(isinstance(m, dict) and m["type"] == "stats" for m in got))
 
+    def test_reminders_question_shows_them_before_the_reply(self):
+        self.hermes.scheduled = [{"name": "Pagar luz", "enabled": True, "next_run_at": "2030-01-02T15:00:00+00:00",
+                                  "schedule": {"kind": "once"}}]
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts()))
+        self.hermes.replies += [(["Tiene uno."], False), (["Listo."], False)]
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "qué recordatorios tengo")
+            got = self.receive_until(ws, "done")
+            panel = [m for m in got if isinstance(m, dict) and m["type"] == "reminders"]
+            self.assertEqual(panel, [{"type": "reminders", "items": [{"name": "Pagar luz", "when": "mié 2 ene · 09:00"}]}])
+            self.assertLess(got.index(panel[0]), next(i for i, m in enumerate(got) if isinstance(m, dict) and m["type"] == "audio"))
+            self.assertIn("Pagar luz (mié 2 ene · 09:00)", self.hermes.prompts[0])
+            self.say(ws, "ponme un recordatorio mañana a las 8")
+            got = self.receive_until(ws, "done")
+        self.assertFalse(any(isinstance(m, dict) and m["type"] == "reminders" for m in got))
+
     def test_theme_follows_the_monitors_and_survives_them_turning_off(self):
         class FakeMonitor:
+            id = "light.leds_monitores"
             colors = [[20, 60, 255], None]
 
-            async def rgb(self):
-                return self.colors.pop(0) if self.colors else None
+            async def devices(self):
+                rgb = self.colors.pop(0) if self.colors else None
+                return [{"id": self.id, "state": "on" if rgb else "off", "rgb_color": rgb}]
 
         with mock.patch("voice_gateway.app.THEME_POLL", 0.01), \
                 TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
@@ -263,6 +285,25 @@ class GatewayTest(unittest.TestCase):
                 ws.send_json({"type": "hello", "client": "pwa", "version": 1})
                 ws.receive_json()
                 self.assertEqual(ws.receive_json(), {"type": "theme", "rgb": [20, 60, 255]})
+
+    def test_device_changes_become_action_cards(self):
+        off = {"id": "light.lampara", "name": "Lámpara", "state": "off"}
+        on = {"id": "light.lampara", "name": "Lámpara", "state": "on", "brightness": 10, "rgb_color": [255, 0, 0]}
+
+        class FakeMonitor:
+            id = "light.leds_monitores"
+            polls = [[off]] * 10  # first sight is not a change, so no card for it
+
+            async def devices(self):
+                return self.polls.pop(0) if self.polls else [on]
+
+        with mock.patch("voice_gateway.app.THEME_POLL", 0.05), \
+                TestClient(create_app(self.stt, self.hermes, FakeTts(), monitor=FakeMonitor())) as client:
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                ws.send_json({"type": "hello", "client": "pwa", "version": 1})
+                ws.receive_json()
+                self.assertEqual(ws.receive_json(), {"type": "device", "id": "light.lampara", "name": "Lámpara",
+                                                     "on": True, "brightness": 10, "rgb": [255, 0, 0]})
 
 
 if __name__ == "__main__":
