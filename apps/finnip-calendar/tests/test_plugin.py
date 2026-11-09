@@ -78,9 +78,26 @@ class CalendarTest(unittest.TestCase):
         self.assertEqual((method, headers["If-None-Match"]), ("PUT", "*"))
         self.assertTrue(url.startswith(ENV["CALDAV_CALENDAR_URL"]) and url.endswith(".ics"))
         self.assertEqual(out["id"], url.removeprefix("https://p1-caldav.icloud.com"))
-        for line in ("DTSTART:20261110T140000Z", "DTEND:20261110T143000Z", "SUMMARY:Pagar luz\\, agua",
-                     "TRIGGER:-PT0M"):
+        for line in ("DTSTART;TZID=America/Mexico_City:20261110T080000", "DTEND;TZID=America/Mexico_City:20261110T083000",
+                     "TZID:America/Mexico_City", "SUMMARY:Pagar luz\\, agua", "TRIGGER:-PT0M"):
             self.assertIn(line + "\r\n", body)
+        self.assertNotIn("RRULE", body)
+
+    def test_create_recurring_keeps_local_weekday(self):
+        with self.fake():
+            plugin.run({"action": "create", "summary": "Reunión", "start": "2026-11-11T21:00",
+                        "repeat": "rrule:freq=weekly;byday=we;until=20261231T235959Z"})
+        body = self.sent[0][2]
+        self.assertIn("DTSTART;TZID=America/Mexico_City:20261111T210000\r\n", body)  # Wednesday, not 03:00Z Thursday
+        self.assertIn("RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20261231T235959Z\r\n", body)
+        self.assertLess(body.index("END:VTIMEZONE"), body.index("BEGIN:VEVENT"))
+
+    def test_bad_repeat_rule_is_rejected(self):
+        with self.fake():
+            for rule in ("cada semana", "FREQ=HOURLY", "FREQ=WEEKLY\r\nATTENDEE:x"):
+                with self.assertRaises(ValueError):
+                    plugin.run({"action": "create", "summary": "x", "start": "2026-11-10T08:00", "repeat": rule})
+        self.assertEqual(self.sent, [])
 
     def test_create_all_day_without_alarm(self):
         with self.fake():

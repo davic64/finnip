@@ -17,7 +17,12 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-TZ = ZoneInfo("America/Mexico_City")
+TZ_NAME = "America/Mexico_City"
+TZ = ZoneInfo(TZ_NAME)
+# Mexico City has had no DST since 2022: one fixed offset is the whole zone definition.
+VTIMEZONE = ["BEGIN:VTIMEZONE", f"TZID:{TZ_NAME}", "BEGIN:STANDARD", "DTSTART:19700101T000000",
+             "TZOFFSETFROM:-0600", "TZOFFSETTO:-0600", "TZNAME:CST", "END:STANDARD", "END:VTIMEZONE"]
+RRULE = re.compile(r"FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(;[A-Z]+=[A-Z0-9,+\-]+)*")
 ACTIONS = ("list", "create", "delete")
 DEFAULT_MINUTES = 30
 MAX_EVENTS = 25
@@ -47,7 +52,13 @@ SCHEMA = {
                 "type": "integer", "minimum": 0, "maximum": 40320,
                 "description": "create: aviso N minutos antes (0 = a la hora). Sin él, sin aviso propio",
             },
-            "event_id": {"type": "string", "description": "delete: id del evento (de list)"},
+            "repeat": {
+                "type": "string",
+                "description": ("create: repetición como regla RRULE de iCalendar, por ejemplo FREQ=WEEKLY;BYDAY=WE, "
+                                "FREQ=DAILY;COUNT=10, FREQ=MONTHLY;BYMONTHDAY=1 o FREQ=WEEKLY;UNTIL=20261231T235959Z. "
+                                "Omítelo si no se repite"),
+            },
+            "event_id": {"type": "string", "description": "delete: id del evento (de list); en un evento repetido borra toda la serie"},
         },
         "required": ["action"],
     },
@@ -176,11 +187,18 @@ def event_ics(params):
         raise ValueError("start y end deben ser ambos fecha y hora, o ambos solo fecha")
     if end <= start:
         raise ValueError("end debe ser posterior a start")
-    when = (lambda m: f":{utc(m)}") if isinstance(start, datetime) else (lambda d: f";VALUE=DATE:{d:%Y%m%d}")
+    rule = (params.get("repeat") or "").strip().upper().removeprefix("RRULE:")
+    if rule and not RRULE.fullmatch(rule):
+        raise ValueError("repeat debe ser una regla RRULE, por ejemplo FREQ=WEEKLY;BYDAY=WE")
+    timed = isinstance(start, datetime)
+    # Local time with TZID (not UTC): a weekly rule must repeat on the local weekday.
+    when = (lambda m: f";TZID={TZ_NAME}:{m.astimezone(TZ):%Y%m%dT%H%M%S}") if timed else (lambda d: f";VALUE=DATE:{d:%Y%m%d}")
     uid = str(uuid.uuid4())
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Finnip//ES", "BEGIN:VEVENT", f"UID:{uid}",
-             f"DTSTAMP:{utc(datetime.now(timezone.utc))}", f"DTSTART{when(start)}", f"DTEND{when(end)}",
-             f"SUMMARY:{escape(summary)}"]
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Finnip//ES"] + (VTIMEZONE if timed else [])
+    lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{utc(datetime.now(timezone.utc))}",
+              f"DTSTART{when(start)}", f"DTEND{when(end)}", f"SUMMARY:{escape(summary)}"]
+    if rule:
+        lines.append(f"RRULE:{rule}")
     if params.get("description"):
         lines.append(f"DESCRIPTION:{escape(params['description'])}")
     if params.get("reminder_minutes") is not None:
