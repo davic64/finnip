@@ -67,7 +67,7 @@ describe("discovery", () => {
         expect(response.statusCode).toBe(200);
         const devices = response.json().devices as { id: string; capabilities: string[] }[];
         expect(Object.fromEntries(devices.map((device) => [device.id, device.capabilities]))).toEqual({
-            "light.leds_monitores": ["on", "off", "brightness", "color"],
+            "light.leds_monitores": ["on", "off", "brightness", "color", "color_temp"],
             "light.lampara": ["on", "off", "brightness"],
             "light.foco": ["on", "off"],
             "switch.ventilador": ["on", "off"],
@@ -84,7 +84,8 @@ describe("discovery", () => {
         const get = async (id: string) => (await app.inject({ method: "GET", url: `/devices/${id}`, headers })).json();
         expect(await get("light.leds_monitores")).toEqual({
             id: "light.leds_monitores", name: "Leds Monitores", domain: "light", state: "on",
-            capabilities: ["on", "off", "brightness", "color"], brightness: 100, rgb_color: [146, 224, 255],
+            capabilities: ["on", "off", "brightness", "color", "color_temp"], brightness: 100, rgb_color: [146, 224, 255],
+            color_temp_kelvin: null, min_color_temp_kelvin: null, max_color_temp_kelvin: null,
         });
         expect(await get("light.foco")).toMatchObject({ name: "light.foco", brightness: null, rgb_color: null });
         expect(await get("switch.ventilador")).toEqual({
@@ -115,6 +116,46 @@ describe("discovery", () => {
             expect(response.json()).toEqual({ error: "Unknown device" });
         }
         expect(ha.calls.filter((call) => call.path !== "/api/template")).toHaveLength(0);
+    });
+});
+
+describe("color temperature", () => {
+    const LAMP = entity("light.lampara", "on", {
+        friendly_name: "Lámpara", supported_color_modes: ["color_temp", "hs"], brightness: 255,
+        color_temp_kelvin: 4000, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500,
+    });
+    const lamp = (options: Partial<Parameters<typeof fakeHomeAssistant>[0]> = {}) =>
+        setup({ entities: [LAMP], labeled: ["light.lampara"], ...options });
+
+    it("sets warm white with brightness and confirms the reported temperature", async () => {
+        const { ha, app } = lamp({
+            onService: (_d, _s, _b, entities) => set(entities, "light.lampara", "on", { color_temp_kelvin: 2702, brightness: 102 }),
+        });
+        const response = await app.inject({
+            method: "POST", url: "/devices/light.lampara/color_temp", headers, payload: { kelvin: 2700, brightness: 40 },
+        });
+        expect(response.json()).toMatchObject({ confirmed: true, actual: { color_temp_kelvin: 2702, brightness: 40 } });
+        expect(ha.serviceCalls()[0]!.body).toEqual({ entity_id: "light.lampara", color_temp_kelvin: 2700, brightness_pct: 40 });
+    });
+
+    it("rejects a temperature outside the light's range", async () => {
+        const { ha, app } = lamp();
+        const response = await app.inject({
+            method: "POST", url: "/devices/light.lampara/color_temp", headers, payload: { kelvin: 9000 },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().error).toMatch(/2000 and 6500/);
+        expect(ha.serviceCalls()).toEqual([]);
+    });
+
+    it("is not offered by a light without color temperature", async () => {
+        const { app } = setup({
+            entities: [entity("light.foco", "off", { supported_color_modes: ["rgb"] })], labeled: ["light.foco"],
+        });
+        const device = (await app.inject({ method: "GET", url: "/devices/light.foco", headers })).json();
+        expect(device.capabilities).not.toContain("color_temp");
+        const response = await app.inject({ method: "POST", url: "/devices/light.foco/color_temp", headers, payload: { kelvin: 2700 } });
+        expect(response.statusCode).toBe(400);
     });
 });
 

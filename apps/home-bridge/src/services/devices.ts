@@ -1,6 +1,7 @@
 import { findAction, type ActionName } from "../actions.js";
 import { DEVICE_LABEL, domainOf, toDevice, type Device, type Domain } from "../devices.js";
 import type { HomeAssistantService } from "./home-assistant.js";
+import { MUSIC_OFF } from "../modes.js";
 
 // ponytail: no cache, every request asks HA for the label (one extra local call); cache if it ever gets slow.
 // Some devices (Alexa) report a new state a moment after the command: re-read until it matches,
@@ -14,15 +15,22 @@ export function createDevicesService(homeAssistant: HomeAssistantService, settle
     }
 
     async function read(id: string, domain: Domain) {
-        return toDevice(await homeAssistant.getState(id), domain);
+        return withMusic(toDevice(await homeAssistant.getState(id), domain));
+    }
+
+    // ponytail: one local config read per exposed script on every list; cache it if modes multiply.
+    async function withMusic(device: Device): Promise<Device> {
+        if (device.domain !== "script") return device;
+        const config = await homeAssistant.getScriptConfig(device.id.slice("script.".length));
+        return { ...device, music: config?.description?.trim() !== MUSIC_OFF };
     }
 
     return {
         async list(): Promise<Device[]> {
             const [ids, entities] = await Promise.all([exposedIds(), homeAssistant.getStates()]);
-            return entities
+            return Promise.all(entities
                 .filter((entity) => ids.has(entity.entity_id))
-                .map((entity) => toDevice(entity, domainOf(entity.entity_id)!));
+                .map((entity) => withMusic(toDevice(entity, domainOf(entity.entity_id)!))));
         },
 
         // undefined when the entity is not labeled for Finnip or its domain is not allowed.

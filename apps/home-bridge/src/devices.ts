@@ -22,6 +22,9 @@ export interface Device {
     capabilities: ActionName[];
     brightness?: number | null;
     rgb_color?: number[] | null;
+    color_temp_kelvin?: number | null;
+    min_color_temp_kelvin?: number | null;
+    max_color_temp_kelvin?: number | null;
     current_position?: number | null;
     current_temperature?: number | null;
     temperature?: number | null;
@@ -36,6 +39,8 @@ export interface Device {
     media_duration?: number | null;
     media_position?: number | null;
     media_position_at?: string | null;
+    /** Modes (scripts): whether Finnip picks music when it runs (from the script's description). */
+    music?: boolean;
 }
 
 const ENTITY_ID = /^([a-z_]+)\.[a-z0-9_]+$/;
@@ -71,6 +76,7 @@ function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): Ac
             const capabilities: ActionName[] = ["on", "off"];
             if (modes.some((mode) => mode !== "onoff")) capabilities.push("brightness");
             if (modes.some((mode) => COLOR_MODES.has(mode))) capabilities.push("color");
+            if (modes.includes("color_temp")) capabilities.push("color_temp");
             return capabilities;
         }
         case "cover":
@@ -106,6 +112,9 @@ export function toDevice(entity: Entity, domain: Domain): Device {
                 ...base,
                 brightness: rawBrightness === null ? null : Math.round(rawBrightness / 255 * 100),
                 rgb_color: numbers(attributes.rgb_color),
+                color_temp_kelvin: num(attributes.color_temp_kelvin),
+                min_color_temp_kelvin: num(attributes.min_color_temp_kelvin),
+                max_color_temp_kelvin: num(attributes.max_color_temp_kelvin),
             };
         }
         case "cover":

@@ -8,6 +8,15 @@ const entitySchema = z.object({
     attributes: z.record(z.string(), z.unknown()),
 });
 
+// A script as Home Assistant's script editor stores it (/api/config/script/config/<id>).
+const scriptSchema = z.object({
+    alias: z.string().optional(),
+    description: z.string().optional(),
+    icon: z.string().optional(),
+    sequence: z.array(z.record(z.string(), z.unknown())).default([]),
+}).passthrough();
+export type ScriptConfig = z.infer<typeof scriptSchema>;
+
 export function createHomeAssistantService(env: BridgeEnv, fetchImpl: typeof fetch = fetch) {
     async function request(path: string, init: { method?: string; body?: unknown } = {}) {
         const response = await fetchImpl(`${env.HA_URL}${path}`, {
@@ -48,6 +57,21 @@ export function createHomeAssistantService(env: BridgeEnv, fetchImpl: typeof fet
         },
         async callService(domain: string, service: string, data: Record<string, unknown>) {
             await request(`/api/services/${domain}/${service}`, { method: "POST", body: data });
+        },
+        // The script editor's API: writes scripts.yaml and reloads. Callers validate the id.
+        async getScriptConfig(id: string): Promise<ScriptConfig | undefined> {
+            try {
+                return parse(scriptSchema, await (await request(`/api/config/script/config/${id}`)).json());
+            } catch (error) {
+                if (error instanceof Error && error.message.endsWith("HTTP 404")) return undefined;
+                throw error;
+            }
+        },
+        async saveScriptConfig(id: string, config: ScriptConfig) {
+            await request(`/api/config/script/config/${id}`, { method: "POST", body: config });
+        },
+        async deleteScriptConfig(id: string) {
+            await request(`/api/config/script/config/${id}`, { method: "DELETE" });
         },
     };
 }
