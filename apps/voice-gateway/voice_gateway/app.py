@@ -1,17 +1,21 @@
 """voice-gateway: the /ws protocol (Session below) and the PWA's static files."""
 import asyncio
+import base64
 import contextlib
+import hmac
 import json
 import logging
 import os
+import re
 import time
+import uuid
 from array import array
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
@@ -23,6 +27,9 @@ GENERIC_ERROR = "No pude completar la respuesta."
 # ponytail: live partials re-transcribe the whole utterance each time (O(n²) CPU on long phrases);
 # switch to a streaming STT if phrases get long or the CPU saturates.
 PARTIAL_EVERY = 0.3          # seconds between live transcripts
+PART_SLUG = re.compile(r"^[a-z0-9_]{1,40}$")  # same rule as the finnip-parts service
+PHOTO_TIMEOUT = 15.0         # s for the desktop app to take and send a camera frame
+MAX_PHOTO_BYTES = 4 * 1024 * 1024
 PARTIAL_MIN_BYTES = 9600     # 0.3 s of new audio before another partial
 # The client keeps streaming the VAD's end-of-phrase silence (~0.45 s). As soon as the tail goes
 # silent the server transcribes right away; at utterance_end that result is the final transcript
@@ -49,7 +56,10 @@ def is_silent(pcm16):
 
 class TailscaleOnly(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if request.url.path != "/health" and not allowed_user(request.headers):
+        # /internal/* is called by Hermes inside the Compose network (no Tailscale header); it checks
+        # PARTS_API_KEY itself.
+        path = request.url.path
+        if path != "/health" and not path.startswith("/internal/") and not allowed_user(request.headers):
             return PlainTextResponse("Forbidden", status_code=403)
         return await call_next(request)
 
@@ -75,6 +85,9 @@ class Session:
         self.pending_heard = None
         self.user_text, self.user_at = "", 0.0  # last phrase sent to Hermes
         self.spoke = False        # the current reply already sent audio
+        self.desktop = False      # the macOS overlay (hello client "desktop"): shows parts, has the camera
+        self.hello_at = 0.0
+        self.photos = {}          # shared by create_app: photo request id -> future for its reply
         self.lock = asyncio.Lock()
 
     async def send(self, obj, audio=None):
@@ -150,11 +163,17 @@ class Session:
     async def on_control(self, data):
         kind = data.get("type")
         if kind == "hello":
+            self.desktop = data.get("client") == "desktop"
+            self.hello_at = time.monotonic()
             await self.send({"type": "ready", "version": 1})
             if self.theme.get("rgb"):
                 await self.send({"type": "theme", "rgb": self.theme["rgb"]})
             if (self.theme.get("playing") or {}).get("active"):
                 await self.send(self.theme["playing"])
+        elif kind == "photo":
+            future = self.photos.get(data.get("id"))
+            if future and not future.done():
+                future.set_result(data)
         elif kind == "utterance_start":
             self.stop_partials()
             self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
@@ -318,10 +337,10 @@ PRINTER_POLL = 3.0  # seconds between printer checks (OctoPrint on the Compose n
 
 
 def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None,
-               printer=None, notify=None):
+               printer=None, notify=None, parts=None):
     if stt is None:
-        from .services import (EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt, Printer,
-                               host_stats, telegram)
+        from .services import (EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt,
+                               PartsClient, Printer, host_stats, telegram)
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
         disk = os.environ.get("STATIC_DIR") or "/"
         stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
@@ -334,10 +353,12 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         printer_plugin = os.environ.get("PRINTER_PLUGIN", "")
         printer = Printer(printer_plugin) if os.path.exists(printer_plugin) and os.environ.get("OCTOPRINT_API_KEY") else None
         notify = telegram if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID") else None
+        parts = PartsClient() if os.environ.get("PARTS_API_KEY") else None
 
     recent = {"text": "", "at": 0.0}
     theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
     sessions = set()
+    photos = {}       # photo request id -> future, answered by the desktop app's "photo" message
 
     seen = {}         # device id -> (state, brightness, rgb) from the previous poll
     async def broadcast(obj):
@@ -389,6 +410,7 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             return
         await ws.accept()
         session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router)
+        session.photos = photos
         sessions.add(session)
         try:
             await session.run()
@@ -398,7 +420,75 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
     async def health(request):
         return JSONResponse({"ok": True})
 
-    routes = [Route("/health", health), WebSocketRoute("/ws", ws_endpoint)]
+    def internal_allowed(request):
+        key = os.environ.get("PARTS_API_KEY", "")
+        given = request.headers.get("authorization", "")
+        return len(key) >= 32 and hmac.compare_digest(given.encode(), f"Bearer {key}".encode())
+
+    def desktops():
+        """Connected desktop apps, the most recent first (a reopened app may leave an old socket behind)."""
+        return sorted((s for s in sessions if s.desktop), key=lambda s: s.hello_at, reverse=True)
+
+    async def show_part(request):
+        """Hermes (finnip_parts show): the desktop overlay opens this part as a hologram."""
+        if not internal_allowed(request):
+            return JSONResponse({"error": "No autorizado"}, status_code=401)
+        body = await request.json()
+        slug, version, size = body.get("slug"), body.get("version"), body.get("size_mm")
+        if not isinstance(slug, str) or not PART_SLUG.match(slug) or type(version) is not int or version < 1:
+            return JSONResponse({"error": "Pieza inválida"}, status_code=400)
+        targets = desktops()
+        if not targets:
+            return JSONResponse({"error": "La app de escritorio no está conectada"}, status_code=409)
+        valid_size = isinstance(size, list) and len(size) == 3 and all(isinstance(v, (int, float)) for v in size)
+        event = {"type": "part", "slug": slug, "version": version, "name": str(body.get("name") or slug)[:60],
+                 "size_mm": size if valid_size else None, "url": f"/parts/{slug}/v{version}.stl"}
+        for session in targets:
+            with contextlib.suppress(Exception):
+                await session.send(event)
+        return JSONResponse({"shown": slug, "version": version})
+
+    async def part_stl(request):
+        """The part's STL for the overlay, fetched from finnip-parts (the browser never holds its key)."""
+        slug, version = request.path_params["slug"], request.path_params["version"]
+        if parts is None or not PART_SLUG.match(slug):
+            return PlainTextResponse("Not found", status_code=404)
+        try:
+            data = await parts.stl(slug, version)
+        except LookupError:
+            return PlainTextResponse("Not found", status_code=404)
+        return Response(data, media_type="model/stl", headers={"Cache-Control": "private, max-age=3600"})
+
+    async def take_photo(request):
+        """Hermes (finnip_parts look): one camera frame from the desktop app, as JPEG."""
+        if not internal_allowed(request):
+            return JSONResponse({"error": "No autorizado"}, status_code=401)
+        targets = desktops()
+        if not targets:
+            return JSONResponse({"error": "La app de escritorio no está conectada"}, status_code=409)
+        request_id = uuid.uuid4().hex
+        photos[request_id] = asyncio.get_running_loop().create_future()
+        try:
+            await targets[0].send({"type": "photo_request", "id": request_id})
+            reply = await asyncio.wait_for(photos[request_id], PHOTO_TIMEOUT)
+        except asyncio.TimeoutError:
+            return JSONResponse({"error": "La app de escritorio no mandó la foto a tiempo"}, status_code=504)
+        finally:
+            photos.pop(request_id, None)
+        if reply.get("error"):
+            return JSONResponse({"error": str(reply["error"])[:200]}, status_code=502)
+        try:
+            jpeg = base64.b64decode(reply.get("jpeg") or "", validate=True)
+        except ValueError:
+            jpeg = b""
+        if not jpeg.startswith(b"\xff\xd8") or len(jpeg) > MAX_PHOTO_BYTES:
+            return JSONResponse({"error": "La foto llegó dañada"}, status_code=502)
+        return Response(jpeg, media_type="image/jpeg")
+
+    routes = [Route("/health", health), WebSocketRoute("/ws", ws_endpoint),
+              Route("/internal/part", show_part, methods=["POST"]),
+              Route("/internal/photo", take_photo, methods=["POST"]),
+              Route("/parts/{slug}/v{version:int}.stl", part_stl)]
     static_dir = os.environ.get("STATIC_DIR", "")
     if static_dir and os.path.isdir(static_dir):
         routes.append(Mount("/", StaticFiles(directory=static_dir, html=True)))

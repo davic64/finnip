@@ -117,6 +117,7 @@ services:
     env_file:
       - ../config/voice-gateway.env
       - ../config/printer.env
+      - ../config/parts.env
     environment:
       HERMES_URL: http://hermes:8642
       # The agenda panel reuses the finnip-calendar plugin's CalDAV reader (iCloud credentials in the env file).

@@ -37,7 +37,9 @@ export class Link {
     ws.onopen = () => {
       this.retry = 500;
       this.onStatus(true);
-      ws.send(JSON.stringify({ type: "hello", client: "pwa", version: 1 }));
+      // "desktop": the macOS overlay, which shows 3D parts and has the camera (the gateway sends it those).
+      const client = new URLSearchParams(location.search).has("desktop") ? "desktop" : "pwa";
+      ws.send(JSON.stringify({ type: "hello", client, version: 1 }));
     };
     ws.onmessage = (msg) => {
       if (msg.data instanceof ArrayBuffer) {

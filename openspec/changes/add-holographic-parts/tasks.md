@@ -16,8 +16,8 @@
 
 ## 3. Voice gateway
 
-- [ ] 3.1 Servir `data/parts` en solo lectura en `/parts/` y reenviar a la app el evento `part` cuando el plugin pide `show`. Verificar con pruebas que no se puede salir de `data/parts` con la ruta.
-- [ ] 3.2 Agregar la petición de foto: el plugin la pide, el gateway se la pide a la app de escritorio conectada, y responde con error claro si no hay ninguna. Verificar con pruebas.
+- [x] 3.1 Servir `data/parts` en solo lectura en `/parts/` y reenviar a la app el evento `part` cuando el plugin pide `show`. Verificar con pruebas que no se puede salir de `data/parts` con la ruta.
+- [x] 3.2 Agregar la petición de foto: el plugin la pide, el gateway se la pide a la app de escritorio conectada, y responde con error claro si no hay ninguna. Verificar con pruebas.
 
 ## 4. Holograma de la pieza
 

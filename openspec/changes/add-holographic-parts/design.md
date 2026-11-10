@@ -44,7 +44,9 @@ Herramienta para el modelo con acciones `design` (nueva pieza o versión), `list
 - El plugin no aplica holguras por su cuenta: las incluye el modelo en el código, con el valor por defecto que fija `SOUL.md`.
 
 ### Mostrar la pieza
-- El gateway sirve `data/parts` en solo lectura (`/parts/<slug>/v<n>.stl`), detrás de la misma autenticación de Caddy.
+- El gateway sirve `/parts/<slug>/v<n>.stl`, detrás de la misma autenticación de Caddy, pidiéndolo al servicio de piezas con su clave. Así el navegador nunca tiene la clave, el gateway no monta `data/parts` y un nombre inválido no puede salir de la carpeta.
+- Las rutas `/internal/part` y `/internal/photo` son para Hermes dentro de la red de Compose: no llevan el header de Tailscale y piden `PARTS_API_KEY`.
+- La app de escritorio se identifica con `client: "desktop"` en su `hello`. Solo ella recibe las piezas y las peticiones de foto; si hay varias, la conectada más reciente.
 - Un evento `part` por WebSocket (`{slug, version, url, size_mm}`) hace que la app cargue el STL con `STLLoader`.
 - Estilo: aristas con `EdgesGeometry` y una superficie tenue con brillo en los bordes (fresnel), en el color de los monitores y con el bloom actual. Las medidas en mm aparecen junto a la pieza.
 - El núcleo se oculta mientras la pieza está abierta y vuelve al cerrarla ("cierra la pieza", gesto de puño o `Esc`).

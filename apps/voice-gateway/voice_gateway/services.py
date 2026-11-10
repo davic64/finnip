@@ -104,6 +104,23 @@ async def telegram(text):
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text})
         resp.raise_for_status()
+class PartsClient:
+    """STL files from the finnip-parts service, for the hologram (the browser cannot hold its key)."""
+
+    def __init__(self):
+        self.url = os.environ.get("PARTS_URL", "http://parts:3100").rstrip("/")
+        self.key = os.environ["PARTS_API_KEY"]
+        self.http = httpx.AsyncClient(timeout=30)
+
+    async def stl(self, slug, version):
+        response = await self.http.get(f"{self.url}/parts/{slug}/v{int(version)}.stl",
+                                       headers={"Authorization": f"Bearer {self.key}"})
+        if response.status_code == 404:
+            raise LookupError(f"{slug} v{version}")
+        response.raise_for_status()
+        return response.content
+
+
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
