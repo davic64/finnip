@@ -42,6 +42,9 @@ No requiere cambiar código ni desplegar:
 2. En Home Assistant, ponle la etiqueta `finnip` a su entidad.
 3. Finnip lo verá en su siguiente `GET /devices`.
 
+También se puede pedir a Finnip ("agrega la lámpara del buró"): usa
+`GET /candidates` y `POST /devices/:id/expose`, y confirma antes de exponer.
+
 Solo se exponen entidades con la etiqueta **y** de un dominio permitido:
 `light`, `switch`, `cover` y `climate`. Una entidad etiquetada de otro dominio
 (`lock`, `alarm_control_panel`…) se ignora. Para permitir un dominio nuevo hay
@@ -59,6 +62,7 @@ Se calculan con los atributos que reporta Home Assistant:
 | `light` | `on`, `off` | siempre |
 | `light` | `brightness` | algún `supported_color_modes` distinto de `onoff` |
 | `light` | `color` | `supported_color_modes` incluye `hs`, `rgb`, `rgbw`, `rgbww` o `xy` |
+| `light` | `color_temp` | `supported_color_modes` incluye `color_temp`; respeta `min_color_temp_kelvin`/`max_color_temp_kelvin` |
 | `cover` | `open`, `close`, `position`, `stop` | bits 1, 2, 4 y 8 de `supported_features` |
 | `climate` | `temperature` | bit 1 de `supported_features`; respeta `min_temp`/`max_temp` |
 | `climate` | `hvac_mode` | `hvac_modes` no vacío; solo acepta esos modos |
@@ -72,6 +76,7 @@ Se calculan con los atributos que reporta Home Assistant:
 | `POST` | `/devices/:id/on` · `off` · `open` · `close` · `stop` | — |
 | `POST` | `/devices/:id/brightness` | `{ "brightness": 1-100 }` |
 | `POST` | `/devices/:id/color` | `{ "rgb": [r, g, b], "brightness": 1-100 }` |
+| `POST` | `/devices/:id/color_temp` | `{ "kelvin": 1000-12000, "brightness": 1-100 }` |
 | `POST` | `/devices/:id/position` | `{ "position": 0-100 }` |
 | `POST` | `/devices/:id/temperature` | `{ "temperature": n }` |
 | `POST` | `/devices/:id/hvac_mode` | `{ "hvac_mode": "cool" }` |
@@ -80,6 +85,46 @@ Respuestas de error: `404` si el dispositivo no está expuesto o la acción no
 existe; `400` si el cuerpo es inválido, la acción no está en `capabilities` o
 el valor está fuera de los límites del dispositivo; `502` si Home Assistant
 falla. Las entradas se validan antes de contactar a Home Assistant.
+
+## Exponer dispositivos y modos
+| Método | Ruta | Cuerpo |
+|---|---|---|
+| `GET` | `/candidates` | — |
+| `POST` | `/devices/:id/expose` · `hide` | — |
+| `GET` | `/modes` | — |
+| `GET` | `/modes/:slug` | — |
+| `PUT` | `/modes/:slug` | `{ "name": "lectura", "music": false, "steps": [{ "device": "light.lampara", "action": "color_temp", "params": { "kelvin": 2700 } }] }` |
+| `DELETE` | `/modes/:slug` | — |
+
+Límites, aplicados aquí y no en el modelo:
+- Solo se exponen u ocultan `light`, `switch`, `cover`, `climate` y
+  `media_player`. Nunca cerraduras, alarmas ni cámaras.
+- Un modo es siempre el script `modo_<slug>`, con `slug` `^[a-z0-9_]{1,40}$`.
+  Ninguna ruta toca otros scripts.
+- Cada paso es una acción de estado (`on`, `off`, `brightness`, `color`,
+  `color_temp`, `open`, `close`, `stop`, `position`, `temperature`,
+  `hvac_mode`, `pause`, `resume`, `volume`) sobre un dispositivo expuesto, y
+  se valida igual que una orden directa. Un paso inválido rechaza el modo
+  completo (`400`, "Paso N …").
+- Un modo con pasos editados a mano en Home Assistant (esperas, condiciones,
+  otros servicios) se lee con `editable: false` y `PUT` responde `409`.
+- La música va en la descripción del script: `Finnip: con música` o
+  `Finnip: sin música`. Sin descripción vale "con música". `GET /devices`
+  la devuelve como `music` en los dispositivos `script`.
+- `hide` responde `used_by_modes` con los modos que aún usan el dispositivo.
+
+Las etiquetas se cambian por WebSocket (`config/entity_registry/*`) y los
+modos con la API del editor de scripts (`/api/config/script/config/<id>`).
+Ambas requieren que `HA_TOKEN` sea de un usuario **administrador**. Una entidad
+sin entrada en el registro no admite etiquetas (`404`).
+
+Home Bridge no publica puertos; se prueba desde un contenedor de la red de
+Compose (por ejemplo `finnip-brain`):
+
+```sh
+curl -s -H "Authorization: Bearer $BRIDGE_API_KEY" http://home-bridge:3000/candidates
+curl -s -H "Authorization: Bearer $BRIDGE_API_KEY" http://home-bridge:3000/modes
+```
 
 ## Comportamiento
 

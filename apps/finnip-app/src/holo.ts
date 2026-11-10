@@ -118,7 +118,9 @@ export class Holo {
     // GPU budget (measured by the user: 60% GPU on an M5 before this): no MSAA (the composer renders to
     // its own targets anyway), 1x pixels (the glow hides it), bloom at half resolution, throttled loop.
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power", alpha: transparent });
-    this.renderer.setPixelRatio(1);
+    // The overlay's box is small, so it can afford native pixels (Retina on the iPad): at 1x its thin
+    // rings and dots came out jagged and blurry.
+    this.renderer.setPixelRatio(transparent ? Math.min(devicePixelRatio, 2) : 1);
     // Desktop overlay: no background, the Mac's desktop shows through around the hologram.
     if (transparent) this.renderer.setClearColor(0x000000, 0);
     else this.scene.background = new THREE.Color(BG);
@@ -136,7 +138,9 @@ export class Holo {
       fragmentShader: FRAG,
       ...additive,
     });
-    this.globe.add(new THREE.Points(sphere(2200), this.points));
+    // Point size does not shrink with the sphere: on the small overlay 2200 points overlapped into a
+    // solid ball with spiral moiré, so it gets fewer of them.
+    this.globe.add(new THREE.Points(sphere(transparent ? 700 : 2200), this.points));
 
     const line = (opacity: number) => {
       const m = new THREE.LineBasicMaterial({ color: this.color, opacity, ...additive });
@@ -164,7 +168,7 @@ export class Holo {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.45, 0.08);
     this.composer.addPass(this.bloom);
-    if (transparent) Object.assign(this.bloom, { strength: 0.45, radius: 0.3 }); // softer glow over the desktop
+    if (transparent) Object.assign(this.bloom, { strength: 0.75, radius: 0.4 }); // softer than the app, but its 700 points need it
     this.composer.addPass(new OutputPass());
     if (transparent) this.composer.addPass(new ShaderPass(GLOW_ALPHA));
 

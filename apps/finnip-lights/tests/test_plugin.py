@@ -249,7 +249,7 @@ class ModeTest(unittest.TestCase):
             calls.append((method, path))
             if path == "/devices":
                 return {"devices": [{"id": "script.modo_calido", "name": "Modo cálido", "domain": "script"},
-                                    {"id": "script.modo_cine", "name": "Modo cine", "domain": "script"},
+                                    {"id": "script.modo_cine", "name": "Modo cine", "domain": "script", "music": False},
                                     {"id": "light.lampara", "name": "Lámpara", "domain": "light"}]}
             return {"confirmed": True}
         with mock.patch.object(plugin, "call_bridge", bridge):
@@ -260,7 +260,53 @@ class ModeTest(unittest.TestCase):
         self.assertIn(("POST", "/devices/script.modo_cine/run"), calls)
         self.assertIn("reprodúcelo", warm["context"])
         self.assertIn("no lleva música", movie["context"])
-        self.assertIsNone(unknown)
+        self.assertIn("no existe", unknown["context"])
+        self.assertIn("Modo cálido, Modo cine", unknown["context"])
+        self.assertNotIn(("POST", "/devices/script.modo_fiesta/run"), calls)
+
+
+
+@mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
+class AdminTest(unittest.TestCase):
+    def call(self, params, replies=None):
+        sent = []
+        def bridge(method, path, body=None):
+            sent.append((method, path, body))
+            return (replies or {}).get(path, {"ok": True})
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            return json.loads(plugin.handle(params)), sent
+
+    def test_slugify(self):
+        self.assertEqual(plugin.slugify("Modo Lectura Nocturna"), "lectura_nocturna")
+        self.assertEqual(plugin.slugify("cálido / año"), "calido_ano")
+        self.assertRaises(ValueError, plugin.slugify, "modo")
+
+    def test_expose_finds_the_name_among_candidates(self):
+        candidates = {"/candidates": {"candidates": [{"id": "light.lampara_buro", "name": "Lámpara del buró"}]}}
+        _, sent = self.call({"action": "expose", "device": "lámpara del buró"}, candidates)
+        self.assertEqual(sent, [("GET", "/candidates", None), ("POST", "/devices/light.lampara_buro/expose", None)])
+
+    def test_mode_routes_use_the_slug(self):
+        _, read = self.call({"action": "mode", "name": "Modo estudio"})
+        _, deleted = self.call({"action": "delete_mode", "name": "Cine"})
+        _, listed = self.call({"action": "modes"})
+        self.assertEqual((read, deleted, listed), ([("GET", "/modes/estudio", None)], [("DELETE", "/modes/cine", None)],
+                                                   [("GET", "/modes", None)]))
+
+    def test_save_mode_resolves_step_devices(self):
+        _, sent = self.call({"action": "save_mode", "name": "lectura", "music": False, "steps": [
+            {"device": "lámpara", "action": "color_temp", "params": {"kelvin": 2700}},
+            {"device": "light.leds_monitores", "action": "off"},
+        ]}, {"/devices": DEVICES})
+        self.assertEqual(sent[-1], ("PUT", "/modes/lectura", {"name": "lectura", "music": False, "steps": [
+            {"device": "light.lampara", "action": "color_temp", "params": {"kelvin": 2700}},
+            {"device": "light.leds_monitores", "action": "off", "params": {}},
+        ]}))
+
+    def test_save_mode_without_steps_never_calls_the_bridge(self):
+        result, sent = self.call({"action": "save_mode", "name": "vacío"})
+        self.assertFalse(result["success"])
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":

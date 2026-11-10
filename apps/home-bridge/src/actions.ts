@@ -43,6 +43,24 @@ export const ACTIONS = {
         confirm: (input, actual) => actual.state === "on" && actual.brightness === input.brightness &&
             colorsMatch(input.rgb, actual.rgb_color ?? null),
     }),
+    // White light by temperature ("blanco cálido" ~2700 K), within the light's own range.
+    color_temp: define({
+        input: z.object({ kelvin: z.number().int().min(1000).max(12000), brightness: percent.optional() }),
+        service: "turn_on",
+        data: (input) => ({
+            color_temp_kelvin: input.kelvin,
+            ...(input.brightness === undefined ? {} : { brightness_pct: input.brightness }),
+        }),
+        check: (input, device) => {
+            const { min_color_temp_kelvin: min, max_color_temp_kelvin: max } = device;
+            if ((min != null && input.kelvin < min) || (max != null && input.kelvin > max)) {
+                return `Color temperature must be between ${min} and ${max} K`;
+            }
+        },
+        confirm: (input, actual) => actual.state === "on" && actual.color_temp_kelvin != null &&
+            Math.abs(actual.color_temp_kelvin - input.kelvin) <= 100 &&
+            (input.brightness === undefined || actual.brightness === input.brightness),
+    }),
     open: define({
         input: noInput, service: "open_cover",
         confirm: (_, actual) => actual.state === "open" || actual.state === "opening",

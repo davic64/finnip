@@ -9,14 +9,16 @@ import urllib.request
 BRIDGE_URL = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/")
 
 ACTIONS = (
-    "list", "status", "on", "off", "brightness", "color",
+    "list", "status", "on", "off", "brightness", "color", "color_temp",
     "open", "close", "stop", "position", "temperature", "hvac_mode",
     "play", "command", "pause", "resume", "volume", "run",
+    "discover", "expose", "hide", "modes", "mode", "save_mode", "delete_mode",
 )
 # Parameters each action forwards to Home Bridge, which validates them again.
 ACTION_FIELDS = {
     "brightness": ("brightness",),
     "color": ("rgb", "brightness"),
+    "color_temp": ("kelvin", "brightness"),
     "position": ("position",),
     "temperature": ("temperature",),
     "hvac_mode": ("hvac_mode",),
@@ -63,12 +65,15 @@ def normalize(text):
     return " ".join("".join(c for c in text if not unicodedata.combining(c)).split())
 
 
-def resolve_device(device):
-    """Accept an entity_id or a device name, so the model can act without a prior list call."""
+def resolve_device(device, path="/devices", key="devices"):
+    """Accept an entity_id or a device name, so the model can act without a prior list call.
+    expose looks the name up among the candidates instead, since the device is not exposed yet."""
     if ENTITY_ID.match(device):
         return device
     query = normalize(device)
-    devices = call_bridge("GET", "/devices").get("devices", [])
+    if not query:
+        raise ValueError("Falta el dispositivo: usa su nombre o su id")
+    devices = call_bridge("GET", path).get(key, [])
     names = {d["id"]: normalize(d.get("name", "")) for d in devices}
     exact = [id_ for id_, name in names.items() if name == query]
     partial = [id_ for id_, name in names.items() if name and (query in name or name in query)]
@@ -80,17 +85,49 @@ def resolve_device(device):
     raise ValueError(f"'{device}' {problem}. Disponibles: {available}")
 
 
+def slugify(name):
+    """'Modo Lectura Nocturna' -> 'lectura_nocturna': the bridge script is always modo_<slug>."""
+    words = normalize(name).split()
+    if words[:1] == ["modo"]:
+        words = words[1:]
+    slug = re.sub(r"[^a-z0-9]+", "_", " ".join(words)).strip("_")[:40]
+    if not slug:
+        raise ValueError("Falta el nombre del modo")
+    return slug
+
+
+def mode_action(action, params):
+    slug = slugify(str(params.get("name") or ""))
+    if action == "mode":
+        return call_bridge("GET", f"/modes/{slug}")
+    if action == "delete_mode":
+        return call_bridge("DELETE", f"/modes/{slug}")
+    steps = params.get("steps")
+    if not isinstance(steps, list) or not steps or not all(isinstance(step, dict) for step in steps):
+        raise ValueError("Faltan los pasos del modo: lista de {device, action, params}")
+    steps = [{"device": resolve_device(str(step.get("device") or "")), "action": step.get("action"),
+              "params": step.get("params") or {}} for step in steps]
+    body = {"name": params["name"], "music": params.get("music", True), "steps": steps}
+    return call_bridge("PUT", f"/modes/{slug}", body)
+
+
 def run(params):
     action = params.get("action")
     if action not in ACTIONS:
         raise ValueError("Acción no permitida")
     if action == "list":
         return call_bridge("GET", "/devices")
+    if action == "discover":
+        return call_bridge("GET", "/candidates")
+    if action == "modes":
+        return call_bridge("GET", "/modes")
+    if action in ("mode", "save_mode", "delete_mode"):
+        return mode_action(action, params)
 
     device = params.get("device")
     if not isinstance(device, str) or not device.strip():
         raise ValueError("Falta el dispositivo: usa su nombre o su id")
-    device = resolve_device(device)
+    device = resolve_device(device, "/candidates", "candidates") if action == "expose" else resolve_device(device)
     if action == "status":
         return call_bridge("GET", f"/devices/{device}")
 
@@ -111,7 +148,14 @@ SCHEMA = {
         "Para actuar pasa directamente el nombre del dispositivo en device (por ejemplo 'lámpara'); "
         "no necesitas llamar list antes. Usa list solo para descubrir dispositivos o sus capabilities. "
         "Si el nombre no coincide o es ambiguo, el error incluye los dispositivos disponibles. "
-        "Cada orden devuelve confirmed y actual con el estado que reporta Home Assistant."
+        "Cada orden devuelve confirmed y actual con el estado que reporta Home Assistant. "
+        "Gestión: discover lista los dispositivos de Home Assistant que Finnip aún no ve; expose agrega uno "
+        "y hide lo oculta (solo luces, enchufes, persianas, clima y bocinas; nunca cerraduras, alarmas ni cámaras). "
+        "Modos: modes los lista; mode lee uno por name; save_mode lo crea o reemplaza con name, music y steps "
+        "(cada paso {device, action, params} con una acción de estado del dispositivo); delete_mode lo borra. "
+        "Para cambiar un paso, lee el modo con mode, cambia ese paso y guarda todos los pasos. "
+        "Un modo con editable false se editó a mano en Home Assistant: no lo sobrescribas. "
+        "ANTES de expose o delete_mode nombra el dispositivo o el modo y espera un sí explícito del usuario."
     ),
     "parameters": {
         "type": "object",
@@ -131,6 +175,12 @@ SCHEMA = {
                 "minItems": 3,
                 "maxItems": 3,
                 "description": "Color RGB para color, por ejemplo [128, 0, 255]",
+            },
+            "kelvin": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 12000,
+                "description": "Temperatura de color para color_temp: ~2700 blanco cálido, ~4000 neutro, ~6500 frío",
             },
             "brightness": {
                 "type": "integer",
@@ -167,6 +217,30 @@ SCHEMA = {
                 "minimum": 0,
                 "maximum": 100,
                 "description": "Para volume en Alexa: volumen en porcentaje",
+            },
+            "name": {
+                "type": "string",
+                "maxLength": 60,
+                "description": "Para mode, save_mode y delete_mode: nombre del modo, por ejemplo 'lectura'",
+            },
+            "music": {
+                "type": "boolean",
+                "description": "Para save_mode: si al activarlo Finnip pone música (por defecto true)",
+            },
+            "steps": {
+                "type": "array",
+                "maxItems": 30,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "device": {"type": "string"},
+                        "action": {"type": "string"},
+                        "params": {"type": "object"},
+                    },
+                    "required": ["device", "action"],
+                },
+                "description": "Para save_mode: pasos como {device: 'lámpara', action: 'color_temp', "
+                               "params: {kelvin: 2700, brightness: 40}}",
             },
         },
         "required": ["action"],
@@ -309,7 +383,6 @@ def parse_music_order(message):
 MODE = re.compile(r"^(?:(?:activa|activame|pon|ponme|entra|entremos|cambia|cambiame|inicia|arranca)(?: a| en| al)? )?"
                   r"(?:el )?mod(?:o|io) (\w+(?: \w+){0,2})$")  # "Modio": how the STT once wrote it
 MOVIE = re.compile(r"^(?:voy|vamos) a ver (?:una )?(?:pelicula|peli)$")
-QUIET_MODES = {"modo cine"}  # ponytail: hardcoded; move to the script's description if modes multiply
 
 
 def parse_mode_order(message):
@@ -329,16 +402,20 @@ def mode_fast_path(user_message):
     if mode is None:
         return None
     try:
-        scripts = {normalize(d.get("name", "")): d["id"] for d in call_bridge("GET", "/devices").get("devices", [])
+        scripts = {normalize(d.get("name", "")): d for d in call_bridge("GET", "/devices").get("devices", [])
                    if d.get("domain") == "script"}
         name = difflib.get_close_matches(mode, list(scripts), n=1, cutoff=0.8)  # "modo calido" for "cálido"
         if not name:
-            return None
-        result = call_bridge("POST", f"/devices/{scripts[name[0]]}/run")
+            existing = ", ".join(d.get("name", d["id"]) for d in scripts.values()) or "ninguno"
+            return {"context": (
+                f"[finnip fast path] El usuario pidió el {mode}, pero no existe en Home Assistant (no lo intentes "
+                f"activar). Modos que existen ahora: {existing}. Díselo en una frase y ofrécele crearlo con "
+                "finnip_lights save_mode (por ejemplo con los valores actuales de sus luces).")}
+        result = call_bridge("POST", f"/devices/{scripts[name[0]]['id']}/run")
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté activar el {mode} antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
-    music = ("Este modo no lleva música: no reproduzcas nada." if name[0] in QUIET_MODES else
+    music = ("Este modo no lleva música: no reproduzcas nada." if scripts[name[0]].get("music") is False else
              f"Ahora elige tú un artista o canción concreto que vaya con el {name[0]} y reprodúcelo con "
              "finnip_lights play en la Echo (nunca reggaetón, banda ni cumbia).")
     return {"context": (
