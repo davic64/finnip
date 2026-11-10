@@ -406,7 +406,11 @@ def mode_fast_path(user_message):
                    if d.get("domain") == "script"}
         name = difflib.get_close_matches(mode, list(scripts), n=1, cutoff=0.8)  # "modo calido" for "cálido"
         if not name:
-            return None
+            existing = ", ".join(d.get("name", d["id"]) for d in scripts.values()) or "ninguno"
+            return {"context": (
+                f"[finnip fast path] El usuario pidió el {mode}, pero no existe en Home Assistant (no lo intentes "
+                f"activar). Modos que existen ahora: {existing}. Díselo en una frase y ofrécele crearlo con "
+                "finnip_lights save_mode (por ejemplo con los valores actuales de sus luces).")}
         result = call_bridge("POST", f"/devices/{scripts[name[0]]['id']}/run")
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté activar el {mode} antes de tu turno y falló: {error}. "

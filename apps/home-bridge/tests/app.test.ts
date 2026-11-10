@@ -84,7 +84,7 @@ describe("discovery", () => {
         const get = async (id: string) => (await app.inject({ method: "GET", url: `/devices/${id}`, headers })).json();
         expect(await get("light.leds_monitores")).toEqual({
             id: "light.leds_monitores", name: "Leds Monitores", domain: "light", state: "on",
-            capabilities: ["on", "off", "brightness", "color", "color_temp"], brightness: 100, rgb_color: [146, 224, 255],
+            capabilities: ["on", "off", "brightness", "color", "color_temp"], brightness: 100, color_mode: null, rgb_color: [146, 224, 255],
             color_temp_kelvin: null, min_color_temp_kelvin: null, max_color_temp_kelvin: null,
         });
         expect(await get("light.foco")).toMatchObject({ name: "light.foco", brightness: null, rgb_color: null });

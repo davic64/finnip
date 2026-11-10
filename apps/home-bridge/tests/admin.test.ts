@@ -94,6 +94,16 @@ describe("mode steps translation", () => {
     });
 });
 
+describe("light color state", () => {
+    it("offers only the kelvin of a light in white (color_temp) mode, so replaying it stays white", async () => {
+        const warm = entity("light.lampara", "on", { ...LAMP.attributes, color_mode: "color_temp",
+            brightness: 26, color_temp_kelvin: 2630, rgb_color: [255, 164, 82] });
+        const { app } = setup({ entities: [warm, LEDS, ECHO] });
+        const lamp = (await app.inject({ method: "GET", url: "/devices/light.lampara", headers })).json();
+        expect(lamp).toMatchObject({ color_mode: "color_temp", color_temp_kelvin: 2630, rgb_color: null, brightness: 10 });
+    });
+});
+
 describe("device exposure", () => {
     it("lists unlabeled devices of allowed domains only", async () => {
         const { app } = setup();

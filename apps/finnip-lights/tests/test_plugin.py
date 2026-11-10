@@ -260,7 +260,9 @@ class ModeTest(unittest.TestCase):
         self.assertIn(("POST", "/devices/script.modo_cine/run"), calls)
         self.assertIn("reprodúcelo", warm["context"])
         self.assertIn("no lleva música", movie["context"])
-        self.assertIsNone(unknown)
+        self.assertIn("no existe", unknown["context"])
+        self.assertIn("Modo cálido, Modo cine", unknown["context"])
+        self.assertNotIn(("POST", "/devices/script.modo_fiesta/run"), calls)
 
 
 

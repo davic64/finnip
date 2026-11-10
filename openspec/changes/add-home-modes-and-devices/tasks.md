@@ -28,7 +28,7 @@
 
 ## 6. Migración y despliegue
 
-- [ ] 6.1 Desplegar Home Bridge y el plugin, agregar la regla de confirmación a `SOUL.md` y reiniciar Hermes. Verificar con `GET /health` y `GET /modes` (lista vacía).
+- [x] 6.1 Desplegar Home Bridge y el plugin, agregar la regla de confirmación a `SOUL.md` y reiniciar Hermes. Verificar con `GET /health` y `GET /modes` (lista vacía).
 
 ## 7. Verificación integral
 
