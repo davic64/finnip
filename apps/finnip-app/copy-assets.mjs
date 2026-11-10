@@ -1,6 +1,6 @@
 // Runtime assets the app loads from its own origin (no CDN):
 // /vad/: the VAD's worklet, Silero model and onnxruntime wasm.
-// /hands/: MediaPipe's vision wasm and the hand landmark model (pinned by SHA-256, downloaded once).
+// /hands/: MediaPipe's vision wasm and the gesture recognizer model (pinned by SHA-256, downloaded once).
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -20,9 +20,9 @@ const wasm = "node_modules/@mediapipe/tasks-vision/wasm";
 copy("dist/hands", ["vision_wasm_internal.js", "vision_wasm_internal.wasm",
   "vision_wasm_module_internal.js", "vision_wasm_module_internal.wasm"].map((f) => `${wasm}/${f}`));
 
-const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1";
-const cached = "node_modules/.cache/finnip/hand_landmarker.task";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task";
+const MODEL_SHA256 = "97952348cf6a6a4915c2ea1496b4b37ebabc50cbbf80571435643c455f2b0482";
+const cached = "node_modules/.cache/finnip/gesture_recognizer.task";
 if (!existsSync(cached)) {
   const response = await fetch(MODEL_URL);
   if (!response.ok) throw new Error(`hand model: HTTP ${response.status}`);

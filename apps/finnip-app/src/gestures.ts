@@ -1,10 +1,12 @@
-// Hand gestures for the open 3D part, from MediaPipe's 21 hand landmarks (normalized camera image).
+// Hand gestures for the open 3D part, from MediaPipe Gesture Recognizer: 21 landmarks per hand (normalized
+// camera image) plus its trained gesture label ("Closed_Fist", "Open_Palm", "None"...).
 //   pinch and move (thumb + index together): turn the part; down = look from above, sideways = spin it
 //   pinch with both hands, apart or together: zoom in or out
-//   open hand held 1 s: back to the starting view;  fist held half a second: close the part
+//   open hand held still 1 s: back to the starting view
+//   fist twice in a row (fist, open, fist): close the part
 // Pure functions (tests/gestures.test.mjs); hands.ts feeds them camera frames.
 export type Point = { x: number; y: number };
-export type TrackedHand = { label: string; points: Point[] };
+export type TrackedHand = { label: string; points: Point[]; gesture?: string };
 export type GestureAction =
   | { kind: "rotate"; dx: number; dy: number } // in fractions of the image, already mirrored like a mirror
   | { kind: "zoom"; factor: number }
@@ -13,38 +15,40 @@ export type GestureAction =
 
 const PINCH_ON = 0.3; // thumb-index gap / hand size to start a pinch
 const PINCH_OFF = 0.45; // ...and to release it (hysteresis: no flicker at the threshold)
-const HOLD_MS = { open: 1000, fist: 500 };
 const SMOOTH = 0.5; // landmark jitter
-const FINGERS: [number, number][] = [[8, 6], [12, 10], [16, 14], [20, 18]]; // tip, middle joint
+const STILL_MS = 1000; // open hand this long without moving: reset the view
+const STILL_RANGE = 0.03; // ...within this much of the image
+const DOUBLE_FIST_MS = 1200; // second fist must start this soon after the first
+const STABLE_FRAMES = 2; // fist / not-fist must hold this many frames to count (classifier flicker)
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const handSize = (h: Point[]) => dist(h[0], h[9]) || 1e-3; // wrist to middle knuckle
 const pinchGap = (h: Point[]) => dist(h[4], h[8]) / handSize(h);
 const pinchPoint = (h: Point[]): Point => ({ x: (h[4].x + h[8].x) / 2, y: (h[4].y + h[8].y) / 2 });
-
-/** Every finger straight (tip farther from the wrist than its middle joint) and the thumb apart. */
-export function isOpen(h: Point[]) {
-  return FINGERS.every(([tip, pip]) => dist(h[0], h[tip]) > dist(h[0], h[pip]) * 1.1) && pinchGap(h) > 0.6;
-}
-
-/** At least three fingers curled (tip closer to the wrist than its middle joint): a loose fist counts. */
-export function isFist(h: Point[]) {
-  return FINGERS.filter(([tip, pip]) => dist(h[0], h[tip]) < dist(h[0], h[pip])).length >= 3;
-}
+export const isFist = (h: TrackedHand) => h.gesture === "Closed_Fist";
+export const isOpen = (h: TrackedHand) => h.gesture === "Open_Palm";
 
 export class GestureTracker {
   private pinching = new Map<string, boolean>();
   private smooth = new Map<string, Point>();
   private last = new Map<string, Point>();
   private span: number | null = null;
-  private hold: { kind: "open" | "fist"; since: number; fired: boolean } | null = null;
+  private palm: { t: number; x: number; y: number }[] = []; // one open hand, recent positions
+  private stillDone = false;
+  private fist = false; // debounced fist state of the single hand
+  private flips = 0; // frames in a row disagreeing with `fist`
+  private fistStarts: number[] = [];
 
   reset() {
     this.pinching.clear();
     this.smooth.clear();
     this.last.clear();
     this.span = null;
-    this.hold = null;
+    this.palm = [];
+    this.stillDone = false;
+    this.fist = false;
+    this.flips = 0;
+    this.fistStarts = [];
   }
 
   update(hands: TrackedHand[], now: number): GestureAction[] {
@@ -52,12 +56,14 @@ export class GestureTracker {
     const seen = new Set(hands.map((h) => h.label));
     for (const label of [...this.pinching.keys()]) if (!seen.has(label)) this.forget(label);
     const pinched: { label: string; at: Point }[] = [];
-    for (const { label, points } of hands) {
+    for (const hand of hands) {
+      const { label, points } = hand;
       const was = this.pinching.get(label) ?? false;
       const gap = pinchGap(points);
-      const now_pinching = was ? gap < PINCH_OFF : gap < PINCH_ON;
-      this.pinching.set(label, now_pinching);
-      if (!now_pinching) {
+      // A fist is never a pinch, even with the thumb touching the index.
+      const pinching = !isFist(hand) && (was ? gap < PINCH_OFF : gap < PINCH_ON);
+      this.pinching.set(label, pinching);
+      if (!pinching) {
         this.smooth.delete(label);
         this.last.delete(label);
         continue;
@@ -85,16 +91,44 @@ export class GestureTracker {
       }
     }
 
-    const kind = pinched.length === 0 && hands.length === 1
-      ? (isFist(hands[0].points) ? "fist" : isOpen(hands[0].points) ? "open" : null)
-      : null;
-    if (!kind) this.hold = null;
-    else if (this.hold?.kind !== kind) this.hold = { kind, since: now, fired: false };
-    else if (!this.hold.fired && now - this.hold.since >= HOLD_MS[kind]) {
-      this.hold.fired = true;
-      actions.push({ kind: kind === "fist" ? "close" : "reset" });
-    }
+    const single = pinched.length === 0 && hands.length === 1 ? hands[0] : null;
+    if (this.doubleFist(single, now)) actions.push({ kind: "close" });
+    if (this.stillPalm(single, now)) actions.push({ kind: "reset" });
     return actions;
+  }
+
+  /** Fist, open, fist within DOUBLE_FIST_MS, each state held STABLE_FRAMES frames. */
+  private doubleFist(hand: TrackedHand | null, now: number) {
+    const fist = !!hand && isFist(hand);
+    if (fist === this.fist) {
+      this.flips = 0;
+      return false;
+    }
+    if (++this.flips < STABLE_FRAMES) return false;
+    this.fist = fist;
+    this.flips = 0;
+    if (!fist) return false;
+    this.fistStarts = [...this.fistStarts.filter((t) => now - t <= DOUBLE_FIST_MS), now];
+    if (this.fistStarts.length < 2) return false;
+    this.fistStarts = [];
+    return true;
+  }
+
+  /** An open hand kept still for STILL_MS; once per open hand. */
+  private stillPalm(hand: TrackedHand | null, now: number) {
+    if (!hand || !isOpen(hand)) {
+      this.palm = [];
+      this.stillDone = false;
+      return false;
+    }
+    if (this.stillDone) return false;
+    const knuckle = hand.points[9];
+    this.palm = [...this.palm.filter((p) => now - p.t <= STILL_MS), { t: now, x: knuckle.x, y: knuckle.y }];
+    if (now - this.palm[0].t < STILL_MS * 0.95) return false;
+    const span = (k: "x" | "y") => Math.max(...this.palm.map((p) => p[k])) - Math.min(...this.palm.map((p) => p[k]));
+    if (span("x") >= STILL_RANGE || span("y") >= STILL_RANGE) return false;
+    this.stillDone = true;
+    return true;
   }
 
   private forget(label: string) {

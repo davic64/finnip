@@ -101,6 +101,24 @@ class PluginTest(unittest.TestCase):
                 ("GET", "/parts/soporte"): PART, ("POST", "/internal/part"): status})
             self.assertIn(message, result["error"])
 
+    def test_look_returns_the_photo_as_an_image(self):
+        jpeg = b"\xff\xd8\xff\xe0photo"
+        result = None
+        def urlopen(request, timeout):
+            self.assertEqual((request.get_method(), request.full_url), ("POST", "http://voice-gateway:8765/internal/photo"))
+            self.assertEqual(request.get_header("Authorization"), "Bearer " + "p" * 32)
+            return FakeResponse(jpeg)
+        with mock.patch.object(plugin.urllib.request, "urlopen", urlopen):
+            result = plugin.handle({"action": "look"})
+        self.assertIs(result["_multimodal"], True)
+        self.assertIn("aproximado", result["content"][0]["text"])
+        self.assertEqual(result["content"][1]["image_url"]["url"], "data:image/jpeg;base64,/9j/4HBob3Rv")
+
+    def test_look_explains_why_there_is_no_photo(self):
+        for status, message in ((409, "no está abierta"), (504, "a tiempo"), (502, "fallo")):
+            result, _ = self.call({"action": "look"}, {("POST", "/internal/photo"): status})
+            self.assertIn(message, result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

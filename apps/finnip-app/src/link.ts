@@ -21,6 +21,7 @@ export type ServerEvent =
   | { type: "reminders"; title: string; items: { name: string; when: string; date: string; day: string; time: string }[] }
   | { type: "part"; slug: string; version: number; name: string; size_mm: number[] | null; url: string }
   | { type: "part_view"; view: string }
+  | { type: "photo_request"; id: string }
   | { type: "done" }
   | { type: "error"; message: string };
 

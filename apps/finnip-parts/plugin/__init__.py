@@ -3,6 +3,7 @@
 The model writes each part as OpenSCAD code; the finnip-parts service renders it, keeps every version
 and slices it with CuraEngine for the Ender-3 V3 SE. Printing uploads the G-code to OctoPrint, and the
 finnip-printer watcher announces the end and powers the printer off as with any other print."""
+import base64
 import json
 import os
 import re
@@ -14,7 +15,12 @@ import uuid
 PARTS_URL = os.environ.get("PARTS_URL", "http://parts:3100").rstrip("/")
 OCTOPRINT_URL = os.environ.get("OCTOPRINT_URL", "http://octoprint").rstrip("/")
 GATEWAY_URL = os.environ.get("VOICE_GATEWAY_URL", "http://voice-gateway:8765").rstrip("/")
-ACTIONS = ("design", "list", "get", "show", "slice", "print")
+ACTIONS = ("design", "list", "get", "show", "slice", "print", "look")
+LOOK_NOTE = (
+    "Foto de la cámara de la Mac, tomada ahora porque el usuario lo pidió. Identifica el objeto. Si es un "
+    "producto conocido, usa sus medidas oficiales y dilo. Si no, pide al usuario las medidas que importan para "
+    "el ajuste; con una tarjeta de crédito (85.60 × 53.98 mm) en el mismo plano puedes estimar, pero di que es "
+    "aproximado.")
 
 
 def slugify(name):
@@ -90,6 +96,32 @@ def upload_and_print(filename, gcode):
     return octoprint("POST", "/api/files/local", body, {"Content-Type": f"multipart/form-data; boundary={boundary}"})
 
 
+def look():
+    """One frame from the desktop app's camera, as an image the model sees (Hermes multimodal result)."""
+    key = os.environ.get("PARTS_API_KEY", "")
+    try:
+        jpeg = _request(GATEWAY_URL + "/internal/photo", "POST", b"", {"Authorization": f"Bearer {key}"},
+                        timeout=25, raw=True)
+    except urllib.error.HTTPError as error:
+        if error.code == 409:
+            raise RuntimeError("La app de escritorio no está abierta: no hay cámara para tomar la foto") from error
+        if error.code == 504:
+            raise RuntimeError("La app de escritorio no mandó la foto a tiempo") from error
+        try:
+            detail = json.loads(error.read()).get("error")
+        except (ValueError, AttributeError):
+            detail = None
+        raise RuntimeError(detail or "No pude tomar la foto") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError("No pude contactar al voice gateway para tomar la foto") from error
+    return {
+        "_multimodal": True,
+        "content": [{"type": "text", "text": LOOK_NOTE},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}],
+        "text_summary": f"Foto de la cámara ({len(jpeg) // 1024} KB) adjunta para el modelo principal.",
+    }
+
+
 def _version(params):
     version = params.get("version")
     return f"?version={int(version)}" if version else ""
@@ -101,6 +133,8 @@ def run(params):
         raise ValueError("Acción no permitida")
     if action == "list":
         return parts("GET", "/parts")
+    if action == "look":
+        return look()
     slug = slugify(params.get("name"))
     if action == "design":
         code = params.get("code")
@@ -155,7 +189,9 @@ SCHEMA = {
         "slice la rebana con Cura para PLA (por defecto) o PETG y ajustes opcionales de Cura en settings "
         "(por ejemplo {\"infill_sparse_density\": 40, \"support_enable\": true}); devuelve tiempo en segundos, "
         "gramos y avisos. print imprime la última versión rebanada: ANTES di nombre, material, tiempo y gramos, "
-        "pregunta si la cama está libre y espera un sí explícito; solo entonces llama print con confirmed true."
+        "pregunta si la cama está libre y espera un sí explícito; solo entonces llama print con confirmed true. "
+        "look toma una foto con la cámara de la Mac (solo cuando el usuario pide que mires o midas algo) y te la "
+        "muestra, para identificar el objeto y sus medidas."
     ),
     "parameters": {
         "type": "object",
@@ -179,6 +215,8 @@ SCHEMA = {
 def handle(params, **kwargs):
     try:
         result = run(params)
+        if isinstance(result, dict) and result.get("_multimodal"):
+            return result  # the photo goes to the model as an image
         return json.dumps({"success": True, "action": params.get("action"), "result": result}, ensure_ascii=False)
     except Exception as error:
         return json.dumps({"success": False, "error": str(error)}, ensure_ascii=False)

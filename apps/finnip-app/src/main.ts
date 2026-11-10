@@ -364,6 +364,17 @@ link.onEvent = (e) => {
     case "part_view":
       partView?.view(e.view);
       break;
+    case "photo_request": // finnip_parts look: one camera frame, only because the user asked
+      if (!hands) break;
+      void hands.snapshot().then(
+        (jpeg) => {
+          link.send({ type: "photo", id: e.id, jpeg });
+          document.body.classList.add("photo-taken");
+          setTimeout(() => document.body.classList.remove("photo-taken"), 900);
+        },
+        (err) => link.send({ type: "photo", id: e.id, error: `Cámara: ${err instanceof Error ? err.message : err}` }),
+      );
+      break;
     case "error":
       statusEl.textContent = e.message;
       break;
