@@ -43,6 +43,44 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # 3D printer (USB serial, CH340). Web UI at http://print.finnip through Caddy.
+  octoprint:
+    image: octoprint/octoprint:latest
+    container_name: finnip-octoprint
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:80"
+    devices:
+      # Stable name for the printer's USB serial; replugging it needs a container restart.
+      - /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0:/dev/ttyUSB0
+    volumes:
+      - ../data/octoprint:/octoprint
+  # HTTPS for app.finnip, home.finnip and the tailnet name; replaces `tailscale serve`.
+  caddy:
+    build:
+      context: ../apps/caddy
+    container_name: finnip-caddy
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ../config/domains.env
+    volumes:
+      - ../apps/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../data/caddy:/data
+      # tailscale_auth (who is connecting) and the certificate of the tailnet name.
+      - /var/run/tailscale:/var/run/tailscale
+  # DNS for *.finnip, reached through Tailscale split DNS.
+  dns:
+    image: coredns/coredns:1.12.1
+    container_name: finnip-dns
+    restart: unless-stopped
+    network_mode: host
+    user: "0"  # port 53
+    env_file:
+      - ../config/domains.env
+    command: -conf /Corefile
+    volumes:
+      - ../apps/coredns/Corefile:/Corefile:ro
   voice-gateway:
     build:
       context: ../apps/voice-gateway

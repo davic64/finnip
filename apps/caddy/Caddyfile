@@ -1,0 +1,31 @@
+# Tailnet only: every site listens on the server's Tailscale IP, never on the LAN.
+# *.finnip are private names, answered by apps/coredns through Tailscale split DNS. They are served
+# over plain HTTP: Tailscale (WireGuard) already encrypts the traffic, and a public CA cannot sign
+# a made-up name. The Finnip app needs HTTPS (microphone), so it lives on the tailnet name.
+{
+	default_bind {$FINNIP_IP}
+}
+
+# Certificate from tailscaled; tailscale_auth tells the voice gateway who is connecting.
+{$FINNIP_TS_NAME} {
+	tls {
+		get_certificate tailscale
+	}
+	tailscale_auth
+	reverse_proxy 127.0.0.1:8765 {
+		# Replaces whatever the client sent: only tailscaled vouches for the user.
+		header_up Tailscale-User-Login {http.auth.user.tailscale_user}
+	}
+}
+
+http://app.finnip, http://finnip {
+	redir https://{$FINNIP_TS_NAME}{uri}
+}
+
+http://home.finnip {
+	reverse_proxy 127.0.0.1:8123
+}
+
+http://print.finnip {
+	reverse_proxy 127.0.0.1:5000
+}
