@@ -94,16 +94,31 @@ class StoreTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir)
         self.store = store.Store(self.dir)
 
-    def test_versions_are_kept_and_a_failed_render_changes_nothing(self):
+    def test_only_the_latest_version_is_kept_and_a_failed_render_changes_nothing(self):
         self.store.add_version("soporte", BRACKET, name="Soporte")
+        self.store.slice("soporte", 1)
         self.store.add_version("soporte", BRACKET.replace("5]", "10]"), note="más alto")
         with self.assertRaises(scad.RenderError):
             self.store.add_version("soporte", 'import("x.stl");')
         part = self.store.get("soporte")
-        self.assertEqual([v["size_mm"][2] for v in part["versions"]], [5.0, 10.0])
+        self.assertEqual([(v["version"], v["size_mm"][2]) for v in part["versions"]], [(2, 10.0)])
         self.assertIn("10]", part["current"]["code"])
-        self.assertEqual(self.store.get("soporte", 1)["current"]["version"], 1)
-        self.assertEqual(self.store.list()[0]["versions"], 2)
+        self.assertRaises(store.NotFound, self.store.get, "soporte", 1)
+        self.assertEqual(sorted(p.name for p in Path(self.dir, "soporte").iterdir()), ["part.json", "v2.scad", "v2.stl"])
+        self.store.delete("soporte")
+        self.assertEqual(self.store.list(), [])
+        self.assertRaises(store.NotFound, self.store.delete, "soporte")
+
+    def test_old_versions_are_pruned_on_start(self):
+        self.store.add_version("soporte", BRACKET)
+        self.store.add_version("soporte", BRACKET.replace("5]", "10]"))
+        folder = Path(self.dir, "soporte")
+        meta = json.loads((folder / "part.json").read_text())
+        (folder / "part.json").write_text(json.dumps({**meta, "versions": [{**meta["versions"][0], "version": 1}] + meta["versions"]}))
+        (folder / "v1.stl").write_text("old")
+        store.Store(self.dir)
+        self.assertEqual([v["version"] for v in self.store.get("soporte")["versions"]], [2])
+        self.assertFalse((folder / "v1.stl").exists())
 
     def test_slice_in_pla_and_petg(self):
         self.store.add_version("soporte", BRACKET)
@@ -150,6 +165,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((status, "import" in body["error"]), (400, True))
         self.assertEqual(self.call("POST", "/parts/..%2Fetc/versions", {"code": "cube(1);"})[0], 400)
         self.assertEqual(self.call("GET", "/parts/malo")[0], 404)  # the rejected code created nothing
+        self.assertEqual(self.call("DELETE", "/parts/malo")[0], 404)
 
 
 if __name__ == "__main__":

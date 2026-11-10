@@ -6,6 +6,8 @@ import re
 
 import httpx
 
+from . import text as T
+
 
 class ParakeetStt:
     """NVIDIA Parakeet TDT v3 (multilingual, int8 ONNX on CPU). Measured on the server with the user's
@@ -58,6 +60,10 @@ class HermesClient:
                 event = json.loads(line[5:])
                 if event.get("type") == "response.output_text.delta":
                     yield event.get("delta", "")
+                elif event.get("type") == "response.output_item.added" and event.get("item", {}).get("type") == "function_call":
+                    item = event["item"]
+                    if notice := T.tool_notice(item.get("name"), item.get("arguments")):
+                        yield f"\n{notice}\n"  # its own sentence, spoken while the tool runs
                 elif event.get("type") == "response.failed":
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 

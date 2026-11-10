@@ -85,6 +85,7 @@ export class Hands {
       label: result.handedness[i]?.[0]?.categoryName ?? String(i),
       points,
       gesture: result.gestures[i]?.[0]?.categoryName,
+      score: result.gestures[i]?.[0]?.score,
     }));
     for (const action of this.tracker.update(hands, now)) this.onAction(action);
   }

@@ -218,9 +218,22 @@ class Session:
             await self.send({"type": "done"})  # without it the UI stays in "thinking"
             return
         if data.get("wake"):  # standby, or a barge-in while it speaks: only a phrase with "Finnip" counts
-            if data.get("barge_in") and T.is_echo(transcript, self.sentences):
-                await self.send({"type": "transcript", "text": ""})  # its own voice, even saying "Finnip"
-                return
+            if data.get("barge_in"):
+                # The mic hears the user mixed with Finnip's own voice from the speakers: only the words it
+                # did not say count, so "cállate" or "Finnip" said over its voice still get through.
+                mine = T.unspoken_words(transcript, self.sentences)
+                woke = T.after_wake_word(mine, anywhere=True) if mine else None
+                if mine and (T.is_stop(mine) or woke == "" or (woke and T.is_stop(woke))):
+                    if woke is not None:
+                        await self.send({"type": "wake"})
+                    await self.stop_turn(data)  # "cállate", "Finnip", "Finnip, para": it stops and listens
+                    await self.send({"type": "transcript", "text": ""})
+                    return
+                if woke is None:  # its own voice, even saying "Finnip", or noise
+                    if mine:
+                        log.warning("barge-in without wake word: %r", mine[:80])
+                    await self.send({"type": "transcript", "text": ""})
+                    return
             rest = T.after_wake_word(transcript)
             if rest is None:  # background audio: "Finnip" may fall in the middle of a window
                 rest = T.after_wake_word(transcript, anywhere=True)
@@ -249,6 +262,7 @@ class Session:
         view = T.part_view(transcript) if self.part["open"] and transcript and self.to_desktops else None
         if view:  # "vista de arriba", "cierra la pieza": the overlay moves the part, Hermes is not asked
             await self.send({"type": "transcript", "text": transcript})
+            log.info("part view %s: %r", view, transcript[:60])  # which phrase moved or closed the part
             await self.to_desktops({"type": "part_view", "view": view})
             await self.send({"type": "done"})
             return

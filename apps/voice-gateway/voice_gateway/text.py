@@ -1,5 +1,6 @@
 """Pure text helpers: sentence splitting, what the user heard, echo detection."""
 import difflib
+import json
 import re
 import unicodedata
 from datetime import date, datetime, time, timedelta
@@ -78,6 +79,12 @@ def is_echo(transcript, spoken):
     if t in s:
         return True
     return difflib.SequenceMatcher(None, t, s).find_longest_match().size / len(t) >= ECHO_SIMILARITY
+
+
+def unspoken_words(transcript, spoken):
+    """The transcript's words that Finnip did not just say, in order: the user's part of a barge-in."""
+    said = set(_norm(" ".join(spoken)).split())
+    return " ".join(w for w in _norm(transcript).split() if w not in said)
 
 
 # ponytail: keyword match; move to an intent call if it misfires. A server word alone ("reinicia el
@@ -170,7 +177,7 @@ def reminders_note(items, user_text, label="Próximos 7 días"):
             f"\n\n{user_text}")
 # A 3D part open as a hologram on the desktop: these short orders move it in the app, without Hermes.
 PART_VIEWS = [
-    ("close", r"(cierra|cierrala|quita|quitala|oculta|ocultala)( la| el)?( pieza| holograma)?"),
+    ("close", r"(cierrala|ocultala)|(cierra|quita|oculta) (la pieza|el holograma)"),
     ("top", r"(vista )?(de |desde )?(arriba|superior|planta)"),
     ("bottom", r"(vista )?(de |desde )?(abajo|inferior)"),
     ("front", r"(vista )?(de |desde el )?(frente|frontal)"),
@@ -196,7 +203,23 @@ def part_view(text):
     return next((view for view, pattern in _PART_VIEWS if pattern.match(phrase)), None)
 
 
-# "Finnip, para" while it speaks: stop talking, nothing goes to Hermes.
+def tool_notice(name, arguments):
+    """What Finnip says the moment Hermes calls a slow tool (designing takes about a minute), or None."""
+    if name != "finnip_parts":
+        return None
+    try:
+        args = json.loads(arguments or "{}")
+    except ValueError:
+        args = {}
+    action = args.get("action")
+    if action == "design":
+        return "Va, déjame corregirla." if args.get("change") else "Estoy diseñando la pieza."
+    if action == "look":
+        return "Déjame ver."
+    return None
+
+
+# "Finnip, para" while it speaks: stop talking, nothing goes to Hermes. A stop word alone works too.
 STOP_WORDS = {"para", "parale", "callate", "calla", "basta", "silencio", "detente", "alto", "stop", "ya", "espera"}
 
 

@@ -123,14 +123,14 @@ class PartViewTextTest(unittest.TestCase):
     def test_orders(self):
         cases = {
             "Vista de arriba.": "top", "Finnip, ponla de frente": "front", "vista lateral": "side",
-            "Cierra la pieza.": "close", "quítala": "close", "Gírala": "spin", "deja de girarla": "still",
+            "Cierra la pieza.": "close", "quita el holograma": "close", "ciérrala": "close", "Gírala": "spin", "deja de girarla": "still",
             "Más cerca, por favor": "closer", "aléjala": "farther", "Vista inicial": "reset", "desde abajo": "bottom",
             "enséñala de lado": "side",
         }
         for text, view in cases.items():
             self.assertEqual(T.part_view(text), view, text)
         for text in ("Cierra la puerta del garaje", "¿Qué hay arriba en mi agenda?", "Hazla 5 mm más alta",
-                     "gira la lámpara a la izquierda", ""):
+                     "gira la lámpara a la izquierda", "", "Quítala.", "cierra", "quítale la ranura"):
             self.assertIsNone(T.part_view(text), text)
 
 

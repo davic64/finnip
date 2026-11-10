@@ -14,6 +14,9 @@ Todas piden `Authorization: Bearer $PARTS_API_KEY`, menos `/health`.
 | `POST` | `/parts/<slug>/versions` | `{ "code": "…", "name": "Soporte", "description": "…", "note": "más alto" }` |
 | `POST` | `/parts/<slug>/versions/<n>/slice` | `{ "material": "PLA" \| "PETG", "settings": { "infill_sparse_density": 40 } }` |
 | `GET` | `/parts/<slug>/v<n>.stl` · `.gcode` · `.scad` | — |
+| `DELETE` | `/parts/<slug>` | — |
+
+Solo se guarda la última versión de cada pieza: una versión nueva borra los archivos de las anteriores (los números siguen creciendo).
 
 Errores: `400` código o ajuste inválido (el mensaje sirve para que el modelo corrija), `404` pieza o versión inexistente, `401` sin clave.
 
@@ -40,7 +43,7 @@ Si se actualiza Cura, se cambian `CURA_VERSION` y `CURA_SHA256` en el `Dockerfil
 
 ## Plugin de Hermes (`plugin/`)
 
-Herramienta `finnip_parts` con `design`, `list`, `get`, `show`, `slice` y `print`.
+Herramienta `finnip_parts` con `design`, `list`, `get`, `show`, `slice`, `print` y `delete` (pide `confirmed: true`).
 
 - `print` exige la versión ya rebanada, `confirmed: true` y la impresora conectada y libre; sube el G-code a OctoPrint con `select` y `print`. El fin de la impresión lo anuncia el plugin `finnip-printer`.
 - `show` pide al voice gateway (`POST /internal/part`) que el overlay abra la pieza.

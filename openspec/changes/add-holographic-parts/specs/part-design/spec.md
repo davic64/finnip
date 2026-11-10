@@ -18,11 +18,22 @@ Finnip SHALL convertir la descripción del usuario en código OpenSCAD, y el ser
 - **THEN** el servicio devuelve el mensaje de error y no guarda una versión nueva
 
 ### Requirement: Versiones de una pieza
-Cada cambio a una pieza SHALL crear una versión nueva y conservar las anteriores.
+Cada cambio a una pieza SHALL crear una versión nueva y borrar las anteriores: solo se guarda la última.
 
 #### Scenario: Cambiar una medida
 - **WHEN** el usuario dice "hazla 5 mm más alta"
-- **THEN** existe una versión nueva con la altura cambiada y la versión anterior sigue disponible
+- **THEN** existe una versión nueva con la altura cambiada y los archivos de la anterior se borran
+
+### Requirement: Borrar una pieza
+Finnip SHALL borrar una pieza completa solo después de confirmar su nombre con el usuario.
+
+#### Scenario: Borrar con confirmación
+- **WHEN** el usuario dice "borra el soporte"
+- **THEN** Finnip pregunta si borra esa pieza y la borra solo después de un sí
+
+#### Scenario: Sin confirmación
+- **WHEN** la herramienta recibe `delete` sin `confirmed: true`
+- **THEN** no borra nada y devuelve que falta la confirmación
 
 ### Requirement: Render aislado
 El servicio de piezas SHALL rechazar código con `import`, `include` o `use`, y SHALL detener un render que exceda 60 segundos o su límite de memoria. El servicio no SHALL tener puertos publicados ni escribir fuera de `data/parts/`.

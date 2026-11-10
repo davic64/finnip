@@ -36,8 +36,17 @@ test("a fist with the thumb on the index is not a pinch; one fist does nothing",
 
 test("fist twice in a row closes the part", () => {
   const t = new GestureTracker();
-  const got = frames(t, ["open", "fist", "fist", "fist", "open", "open", "open", "fist", "fist"], 0);
+  const f = (pose, n) => Array(n).fill(pose);
+  const got = frames(t, [...f("open", 2), ...f("fist", 5), ...f("open", 5), ...f("fist", 5)], 0);
   assert.deepEqual(got, [{ kind: "close" }]);
+});
+test("a half-closed hand (low fist score) or a short fist does not close", () => {
+  const unsure = (pose) => ({ ...hand(pose), score: pose === "fist" ? 0.6 : 0.9 });
+  let t = new GestureTracker();
+  const seq = ["fist", "fist", "fist", "fist", "fist", "open", "open", "open", "open", "open", "fist", "fist", "fist", "fist", "fist"];
+  assert.deepEqual(seq.flatMap((pose, i) => t.update([unsure(pose)], i * 40)).filter((a) => a.kind === "close"), []);
+  t = new GestureTracker();
+  assert.deepEqual(frames(t, ["fist", "fist", "fist", "open", "open", "open", "open", "fist", "fist", "fist"], 0), []);
 });
 
 test("two fists too far apart, or a one-frame flicker, do not close", () => {

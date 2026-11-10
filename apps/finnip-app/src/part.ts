@@ -1,5 +1,5 @@
 // A 3D part as a hologram on the desktop overlay: the STL (served by the gateway) drawn full screen as
-// glowing edges over a faint fresnel surface, in the monitors' color with the same bloom as the core, so
+// glowing edges over a translucent fresnel surface with scan lines; the far side stays hidden, in the monitors' color with the same bloom as the core, so
 // zooming in never cuts it. It is turned by hand gestures (hands.ts), by voice ("vista de arriba",
 // resolved by the gateway into part_view) or with the mouse inside a central square: the macOS app takes
 // the cursor only there (see onBox), clicks elsewhere still reach the apps underneath. Drawn while open.
@@ -10,7 +10,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { clampZoom, dragPose, PART_START, partPose, type PartPose } from "./desktop";
+import { clampZoom, dragPose, PART_START, partPose, turn, type PartPose } from "./desktop";
 import { glowAlpha } from "./holo";
 
 export type PartInfo = { slug: string; version: number; name: string; size_mm: number[] | null; url: string };
@@ -27,16 +27,23 @@ const SURFACE_VERT = /* glsl */ `
   }`;
 const SURFACE_FRAG = /* glsl */ `
   uniform vec3 uColor;
+  uniform float uTime;
+  uniform float uBusy;
   varying vec3 vNormal;
   varying vec3 vView;
   void main() {
-    float rim = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.0);
-    gl_FragColor = vec4(uColor, 0.05 + 0.45 * rim); // faint faces, brighter silhouette
+    vec3 n = normalize(vNormal);
+    float rim = pow(1.0 - abs(dot(n, normalize(vView))), 2.0);
+    float light = max(dot(n, normalize(vec3(-0.35, 0.55, 0.75))), 0.0); // a hint of shape on flat faces
+    float scan = 0.75 + 0.25 * step(0.5, fract((gl_FragCoord.y + uTime * (40.0 + 200.0 * uBusy)) / 4.0)); // scan lines
+    float pulse = 1.0 + uBusy * (0.5 + 0.5 * sin(uTime * 6.0)); // working on it: the glow breathes
+    gl_FragColor = vec4(uColor, (0.06 + 0.08 * light + 0.5 * rim) * scan * pulse); // faint faces, bright silhouette
   }`;
 const FPS_MS = 33;
 
 export class PartView {
   open = false;
+  busy = false; // Finnip is working (designing a change): faster scan lines and a breathing glow
   private renderer: THREE.WebGLRenderer;
   private composer: EffectComposer;
   private bloom: UnrealBloomPass;
@@ -46,9 +53,14 @@ export class PartView {
   private model = new THREE.Group(); // the STL, Z up as printed -> Y up
   private color = new THREE.Color(0x38e1ff);
   private edges = new THREE.LineBasicMaterial({ color: this.color, opacity: 0.95, ...additive });
+  // Drawn first, depth only: the near faces hide the far side's faces and edges (they looked like extra
+  // walls), while what is drawn stays a see-through glow. Pushed back so the visible edges win.
+  private depth = new THREE.MeshBasicMaterial({
+    colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+  });
   private surface = new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: this.color } }, vertexShader: SURFACE_VERT, fragmentShader: SURFACE_FRAG,
-    side: THREE.DoubleSide, ...additive,
+    uniforms: { uColor: { value: this.color }, uTime: { value: 0 }, uBusy: { value: 0 } }, vertexShader: SURFACE_VERT,
+    fragmentShader: SURFACE_FRAG, side: THREE.DoubleSide, ...additive,
   });
   private pose: PartPose = { ...PART_START };
   private shown = { ...PART_START }; // eased toward pose
@@ -108,7 +120,11 @@ export class PartView {
     geometry.computeVertexNormals();
     geometry.center();
     geometry.computeBoundingSphere();
-    this.model.add(new THREE.Mesh(geometry, this.surface), new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), this.edges));
+    const occluder = new THREE.Mesh(geometry, this.depth);
+    const glow = new THREE.Mesh(geometry, this.surface);
+    const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), this.edges);
+    [occluder.renderOrder, glow.renderOrder, lines.renderOrder] = [0, 1, 2];
+    this.model.add(occluder, glow, lines);
     const radius = geometry.boundingSphere?.radius || 1;
     this.fit = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.1;
     this.pose = { ...PART_START };
@@ -176,9 +192,15 @@ export class PartView {
     if (now - this.last < FPS_MS) return;
     const dt = Math.min((now - (this.last || now)) / 1000, 0.1);
     this.last = now;
-    if (this.pose.spin) this.pose = { ...this.pose, yaw: this.pose.yaw + dt * 0.6 };
-    const ease = 1 - Math.exp(-dt * 8);
-    for (const key of ["pitch", "yaw", "zoom"] as const) this.shown[key] += (this.pose[key] - this.shown[key]) * ease;
+    if (this.pose.spin || this.busy) this.pose = { ...this.pose, yaw: this.pose.yaw + dt * (this.busy ? 1.4 : 0.6) };
+    this.box.classList.toggle("busy", this.busy);
+    this.surface.uniforms.uTime.value = now / 1000;
+    const busy = this.surface.uniforms.uBusy;
+    busy.value += ((this.busy ? 1 : 0) - busy.value) * Math.min(1, dt * 4);
+    this.edges.opacity = 0.95 * (1 - 0.35 * busy.value * (0.5 + 0.5 * Math.sin(now / 160)));
+    const ease = 1 - Math.exp(-dt * 14); // quick to follow the hand, still smooth
+    for (const key of ["pitch", "yaw"] as const) this.shown[key] += turn(this.pose[key], this.shown[key]) * ease;
+    this.shown.zoom += (this.pose.zoom - this.shown.zoom) * ease;
     this.pivot.rotation.set(this.shown.pitch, this.shown.yaw, 0, "XYZ");
     this.camera.position.set(0, 0, this.fit / this.shown.zoom);
     this.camera.lookAt(0, 0, 0);

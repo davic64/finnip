@@ -125,6 +125,33 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.hermes.closed, 1)  # the reply was cancelled
         self.assertEqual(self.hermes.prompts, ["mi agenda"])
 
+    def test_orders_said_over_its_own_voice_get_through(self):
+        for ask, said, prompts in (("mi agenda", "tienes tres reuniones cállate", ["mi agenda"]),
+                                   ("mi día", "hoy tienes Finnip apaga la lámpara", ["mi día", "apaga la lámpara"])):
+            self.hermes.prompts.clear()
+            self.hermes.replies[:] = [(["Hoy tienes tres reuniones. "], True), (["Listo. "], False)]
+            with self.client.websocket_connect("/ws", headers=USER) as ws:
+                self.say(ws, ask)
+                self.receive_until(ws, "audio")
+                ws.receive_bytes()
+                self.say(ws, said, wake=True, barge_in=True, played_seq=0, played_ms=300)
+                if len(prompts) == 1:
+                    self.receive_until(ws, "transcript")
+                else:
+                    self.receive_until(ws, "done")
+            self.assertEqual(len(self.hermes.prompts), len(prompts), said)
+            self.assertTrue(self.hermes.prompts[-1].endswith(prompts[-1]), said)  # a new turn carries what was heard
+
+    def test_a_stop_word_alone_stops_the_reply(self):
+        self.hermes.replies.append((["Hoy tienes tres reuniones. "], True))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "mi agenda")
+            self.receive_until(ws, "audio")
+            ws.receive_bytes()
+            self.say(ws, "Espera.", wake=True, barge_in=True, played_seq=0, played_ms=300)
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+        self.assertEqual(self.hermes.closed, 1)
+        self.assertEqual(self.hermes.prompts, ["mi agenda"])
     def test_own_voice_saying_finnip_does_not_interrupt(self):
         self.hermes.replies.append((["Soy Finnip, su asistente. "], True))
         with self.client.websocket_connect("/ws", headers=USER) as ws:

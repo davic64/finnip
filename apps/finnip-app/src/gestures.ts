@@ -6,26 +6,27 @@
 //   fist twice in a row (fist, open, fist): close the part
 // Pure functions (tests/gestures.test.mjs); hands.ts feeds them camera frames.
 export type Point = { x: number; y: number };
-export type TrackedHand = { label: string; points: Point[]; gesture?: string };
+export type TrackedHand = { label: string; points: Point[]; gesture?: string; score?: number };
 export type GestureAction =
   | { kind: "rotate"; dx: number; dy: number } // in fractions of the image, already mirrored like a mirror
   | { kind: "zoom"; factor: number }
   | { kind: "reset" }
   | { kind: "close" };
 
-const PINCH_ON = 0.3; // thumb-index gap / hand size to start a pinch
-const PINCH_OFF = 0.45; // ...and to release it (hysteresis: no flicker at the threshold)
-const SMOOTH = 0.5; // landmark jitter
+const PINCH_ON = 0.38; // thumb-index gap / hand size to start a pinch
+const PINCH_OFF = 0.55; // ...and to release it (hysteresis: no flicker at the threshold)
+const SMOOTH = 0.7; // landmark jitter (higher follows faster)
 const STILL_MS = 1000; // open hand this long without moving: reset the view
 const STILL_RANGE = 0.03; // ...within this much of the image
-const DOUBLE_FIST_MS = 1200; // second fist must start this soon after the first
-const STABLE_FRAMES = 2; // fist / not-fist must hold this many frames to count (classifier flicker)
+const DOUBLE_FIST_MS = 1500; // second fist must start this soon after the first
+const STABLE_FRAMES = 4; // fist / not-fist must hold this many frames to count (~130 ms; a half-closed hand flickered)
+const FIST_SCORE = 0.8; // the classifier must be this sure: a half-closed hand scored lower
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const handSize = (h: Point[]) => dist(h[0], h[9]) || 1e-3; // wrist to middle knuckle
 const pinchGap = (h: Point[]) => dist(h[4], h[8]) / handSize(h);
 const pinchPoint = (h: Point[]): Point => ({ x: (h[4].x + h[8].x) / 2, y: (h[4].y + h[8].y) / 2 });
-export const isFist = (h: TrackedHand) => h.gesture === "Closed_Fist";
+export const isFist = (h: TrackedHand) => h.gesture === "Closed_Fist" && (h.score ?? 1) >= FIST_SCORE;
 export const isOpen = (h: TrackedHand) => h.gesture === "Open_Palm";
 
 export class GestureTracker {

@@ -8,7 +8,7 @@ El usuario imprime piezas en su Ender-3 V3 SE, pero para diseñarlas necesita un
 
 - **Diseño por voz:**
   - Finnip escribe la pieza como código OpenSCAD a partir de lo que dice el usuario, y un servicio nuevo en el servidor la convierte en STL.
-  - Cada cambio ("hazla 5 mm más alta", "agrégale un agujero de 3 mm") crea una versión nueva. Las anteriores se conservan.
+  - Cada cambio ("hazla 5 mm más alta", "agrégale un agujero de 3 mm") crea una versión nueva. Solo se guarda la última: las anteriores se borran. El usuario puede borrar una pieza completa, con confirmación.
   - El código corre aislado: sin red, con límite de tiempo y de memoria.
 - **Holograma de la pieza:**
   - El overlay de escritorio muestra la pieza en lugar del núcleo, con el estilo del holograma y sus medidas en milímetros.

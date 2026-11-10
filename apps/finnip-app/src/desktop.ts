@@ -29,11 +29,14 @@ export function partPose(pose: PartPose, view: string): PartPose {
   return pose;
 }
 
-/** Mouse drag in CSS pixels turns the part; the pitch stops at straight above or below. */
+/** Mouse drag in CSS pixels turns the part freely, also past straight above or below. Upside down the
+ *  part's own up axis points down, so the sideways drag is flipped to keep following the hand. */
 export function dragPose(pose: PartPose, dx: number, dy: number): PartPose {
-  const pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pose.pitch + dy * 0.01));
-  return { ...pose, pitch, yaw: pose.yaw + dx * 0.01, spin: false };
+  const side = Math.cos(pose.pitch) < 0 ? -1 : 1;
+  return { ...pose, pitch: pose.pitch + dy * 0.01, yaw: pose.yaw + side * dx * 0.01, spin: false };
 }
+/** a - b as the shortest turn, so easing toward a spoken view never unwinds several turns. */
+export const turn = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
 export const clampZoom = (zoom: number) => Math.max(0.4, Math.min(4, zoom));
 

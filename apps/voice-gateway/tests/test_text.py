@@ -102,6 +102,16 @@ class WakeWordTest(unittest.TestCase):
             self.assertIsNone(T.after_wake_word(text), text)
 
 
+class ToolNoticeTest(unittest.TestCase):
+    def test_slow_tools_are_announced(self):
+        self.assertEqual(T.tool_notice("finnip_parts", '{"action": "design", "request": "x"}'), "Estoy diseñando la pieza.")
+        self.assertEqual(T.tool_notice("finnip_parts", '{"action": "design", "change": true}'), "Va, déjame corregirla.")
+        self.assertEqual(T.tool_notice("finnip_parts", '{"action": "look"}'), "Déjame ver.")
+        for name, args in (("finnip_parts", '{"action": "slice"}'), ("finnip_home", '{"action": "design"}'),
+                           ("finnip_parts", "{roto"), ("finnip_parts", None)):
+            self.assertIsNone(T.tool_notice(name, args), (name, args))
+
+
 class StopTest(unittest.TestCase):
     def test_stop_words(self):
         for text in ("para", "Cállate.", "ya basta", "para por favor"):

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { sceneFor, MusicNotice, partPose, dragPose, PART_START } = await import("../src/desktop.ts");
+const { sceneFor, MusicNotice, partPose, dragPose, turn, PART_START } = await import("../src/desktop.ts");
 
 test("nothing on screen at rest, the corner while talking, the center with a panel", () => {
   assert.equal(sceneFor("standby", false), "hidden");
@@ -26,7 +26,7 @@ test("an open part takes the center over everything else", () => {
   assert.equal(sceneFor("standby", false, true), "part");
   assert.equal(sceneFor("speaking", true, true), "part");
 });
-test("spoken views turn the part; zoom and pitch stay within limits", () => {
+test("spoken views turn the part; zoom stays within limits; drag turns freely", () => {
   const top = partPose({ ...PART_START, spin: true }, "top");
   assert.deepEqual([top.pitch, top.yaw, top.spin], [Math.PI / 2, 0, false]);
   assert.equal(partPose(PART_START, "spin").spin, true);
@@ -36,6 +36,10 @@ test("spoken views turn the part; zoom and pitch stay within limits", () => {
   assert.equal(pose.zoom, 4);
   assert.deepEqual(partPose(pose, "reset"), PART_START);
   assert.equal(partPose(PART_START, "close"), PART_START); // closing is the viewer's job
-  assert.equal(dragPose(PART_START, 0, 10_000).pitch, Math.PI / 2);
+  assert.equal(dragPose(PART_START, 0, 300).pitch, PART_START.pitch + 3); // past straight above
+  const upsideDown = { ...PART_START, pitch: Math.PI };
+  assert.equal(dragPose(upsideDown, 100, 0).yaw, PART_START.yaw - 1);
+  assert.ok(Math.abs(turn(4 * Math.PI + 0.1, 0) - 0.1) < 1e-9);
+  assert.ok(Math.abs(turn(-0.1, Math.PI) - (Math.PI - 0.1)) < 1e-9);
   assert.equal(dragPose(PART_START, 100, 0).yaw, PART_START.yaw + 1);
 });

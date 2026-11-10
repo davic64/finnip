@@ -1,9 +1,13 @@
-"""Parts on disk: <root>/<slug>/part.json plus v<n>.scad, v<n>.stl, v<n>.gcode and v<n>.slice.json."""
+"""Parts on disk: <root>/<slug>/part.json plus v<n>.scad, v<n>.stl, v<n>.gcode and v<n>.slice.json.
+
+Only the latest version is kept: a new one replaces the files of the previous ones. Numbers keep growing,
+so a hologram or a print never mixes up an old file with the new one."""
 
 import datetime
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -31,6 +35,18 @@ class Store:
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        for path in self.root.glob("*/part.json"):  # parts saved while every version was kept
+            meta = json.loads(path.read_text())
+            if len(meta["versions"]) > 1:
+                meta["versions"] = meta["versions"][-1:]
+                self._prune(path.parent, meta["versions"][0]["version"])
+                _write_json(path, meta)
+
+    @staticmethod
+    def _prune(folder, keep):
+        for file in folder.glob("v*.*"):
+            if file.name.split(".")[0] != f"v{keep}":
+                file.unlink()
 
     def _dir(self, slug):
         if not SLUG.match(slug or ""):
@@ -90,9 +106,14 @@ class Store:
         if description:
             meta["description"] = description
         record = {"version": n, "created": _now(), "note": note or "", **result}
-        meta["versions"].append(record)
+        meta["versions"] = [record]
         _write_json(meta_path, meta)
+        self._prune(folder, n)
         return record
+
+    def delete(self, slug):
+        self._meta(slug)
+        shutil.rmtree(self._dir(slug))
 
     def slice(self, slug, version, material="PLA", settings=None):
         meta = self._meta(slug)

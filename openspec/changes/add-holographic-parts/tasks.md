@@ -4,7 +4,7 @@
 
 - [x] 1.1 Crear `apps/finnip-parts`: Dockerfile (Debian 13, `openscad`, CuraEngine y definiciones de Cura 5.14 para Linux con versión fija) y servidor HTTP con clave. Comprobar dentro del contenedor las versiones y que CuraEngine cargue `creality_ender3v3se`.
 - [x] 1.2 Agregar crear o versionar una pieza: rechazar `import`, `include` y `use`; renderizar con límite de 60 s, de memoria y de tamaño; devolver caja envolvente, aviso si no cabe en 220 × 220 × 250 mm y el error de OpenSCAD si falla. Verificar con pruebas: un cubo con agujero, código con `import` rechazado, un bucle que excede el tiempo, una pieza demasiado grande.
-- [x] 1.3 Agregar leer una pieza con sus versiones y listar piezas. Verificar con pruebas que una versión nueva conserva las anteriores.
+- [x] 1.3 Agregar leer una pieza con sus versiones y listar piezas. Verificar con pruebas que una versión nueva borra las anteriores y que se puede borrar una pieza.
 - [x] 1.4 Resolver la pila de Cura (máquina, material `generic_pla` o `generic_petg`, calidad `base_0.4_<material>_standard`, ajustes de la pieza) y evaluar sus fórmulas. Verificar contra los ajustes `;SETTING_3` de un G-code de Cura en la Mac, con PLA y con PETG.
 - [x] 1.5 Agregar rebanar una versión con esa pila y CuraEngine, con material PLA por defecto o PETG y ajustes de la pieza validados contra las definiciones. Leer tiempo y gramos del G-code y devolver material y ajustes cambiados. Verificar con pruebas: el cubo de 1.2 en PLA y PETG (temperaturas distintas en el G-code), con `infill_sparse_density=40`, y una clave inexistente rechazada. Comparar el tiempo con el de Cura en la Mac.
 - [x] 1.6 Agregar el servicio a `compose.yaml` (red interna, sin puertos, solo lectura salvo `data/parts/`, sin capacidades, límite de memoria). Requiere aprobación.
@@ -38,6 +38,8 @@
 ## 7. Impresión
 
 - [ ] 7.1 `print` sube el G-code a OctoPrint con `select` y `print`. Verificar con un OctoPrint falso y después con una prueba de ajuste real pequeña.
+  - [x] OctoPrint falso: plugin desplegado sube el G-code con `select` y `print` solo con `confirmed: true`.
+  - [ ] Prueba de ajuste real (pendiente: impresora apagada).
 
 ## 8. Verificación integral
 

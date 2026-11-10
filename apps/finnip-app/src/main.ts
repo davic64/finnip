@@ -118,6 +118,10 @@ const STATUS: Record<State, string> = {
   speaking: "Toca para interrumpir",
 };
 
+// A reply in progress, from the user's transcript to "done": between its sentences (a tool running,
+// such as designing a part) Finnip shows it is working instead of going back to listening.
+let replyOpen = false;
+
 // Conversation mode falls asleep after SLEEP_MS without speech: the mic stays open in standby and
 // only a phrase that starts with "Finnip" (checked by the server) or a tap wakes it up again.
 const SLEEP_MS = 2000;
@@ -130,7 +134,7 @@ function setState(next: State) {
   clearTimeout(sleepTimer);
   if (next === "listening" && mode === "conversation")
     sleepTimer = window.setTimeout(() => {
-      if (state !== "listening" || streaming) return;
+      if (state !== "listening" || streaming || partView?.open) return; // an open part keeps it listening
       asleep = true;
       setState("standby");
     }, SLEEP_MS);
@@ -144,6 +148,7 @@ function setState(next: State) {
 let musicOn = false;
 function restingState(): State {
   if (mic.isOpen && musicOn && mode === "conversation") asleep = true;
+  else if (partView?.open) asleep = false; // working on a part: talk to it without "Finnip"
   return !mic.isOpen ? "off" : asleep ? "standby" : "listening";
 }
 
@@ -158,7 +163,7 @@ function getPlayer() {
     };
     player.onIdle = () => {
       mic.setMuted(false);
-      setState(restingState());
+      setState(replyOpen ? "thinking" : restingState());
     };
   }
   return player;
@@ -193,7 +198,7 @@ function startUtterance() {
   clearTimeout(wakeWindow);
   if (guarded)
     wakeWindow = window.setTimeout(() => {
-      if (!streaming || !(asleep || bargeIn)) return;
+      if (!streaming || !guarded) return;
       finishUtterance();
       startUtterance(); // still sounding: next window
       recentFrames.forEach((f) => link.sendFrame(f));
@@ -247,11 +252,15 @@ const handlers = {
   },
 };
 
-let opening = false;
+// The mic being opened: a second call waits for the same attempt instead of returning at once (the
+// desktop shortcut used to call talk() -> openMic() -> talk() in a loop that froze the page).
+let opening: Promise<void> | null = null;
 
-async function openMic() {
-  if (opening) return;
-  opening = true;
+function openMic() {
+  return (opening ??= tryOpenMic().finally(() => (opening = null)));
+}
+
+async function tryOpenMic() {
   try {
     statusEl.textContent = "Permite el micrófono…";
     await mic.open(handlers, () => (statusEl.textContent = "Preparando…"));
@@ -264,8 +273,6 @@ async function openMic() {
       err instanceof DOMException && err.name === "NotAllowedError"
         ? "Sin permiso de micrófono: actívalo en el navegador"
         : "No pude abrir el micrófono";
-  } finally {
-    opening = false;
   }
 }
 
@@ -328,11 +335,13 @@ link.onEvent = (e) => {
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
-      if (!e.text) return setState(player?.isSpeaking ? "speaking" : restingState()); // noise: a running reply goes on
+      if (!e.text) return setState(player?.isSpeaking ? "speaking" : replyOpen ? "thinking" : restingState()); // noise: a running reply goes on
       acceptAudio = true;
+      replyOpen = true;
       setState("thinking");
       break;
     case "done":
+      replyOpen = false;
       if (state === "thinking" && !player?.isSpeaking) setState(restingState());
       player?.endOfReply();
       break;
@@ -359,7 +368,9 @@ link.onEvent = (e) => {
       if (acceptAudio) hud.show(e);
       break;
     case "part":
-      void partView?.show(e).catch((err) => console.error("pieza", err));
+      void partView?.show(e).then(() => {
+        if (state === "standby" || state === "listening") setState(restingState()); // listening now
+      }).catch((err) => console.error("pieza", err));
       break;
     case "part_view":
       partView?.view(e.view);
@@ -415,8 +426,9 @@ const levels = new Uint8Array(128);
   if (desktop) {
     const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"), partView?.open);
     if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene;
-    // No drawing while nothing is shown, nor behind an open part.
-    if (holo) holo.paused = (scene === "hidden" && !holoFading()) || scene === "part";
+    // No drawing while nothing is shown; with a part open it stays small in its corner.
+    if (holo) holo.paused = scene === "hidden" && !holoFading();
+    if (partView) partView.busy = state === "thinking"; // the part pulses while Finnip works on it
   }
   if (holo) {
     holo.state = state === "standby" ? "off" : state;
@@ -462,7 +474,7 @@ setTimeout(Mic.preload, 1500);
 if (desktop) {
   const talk = () => {
     void getPlayer().unlock();
-    if (!mic.isOpen) return void openMic().then(talk);
+    if (!mic.isOpen) return void openMic().then(() => mic.isOpen && talk()); // once: no loop if it fails
     if (state === "speaking" || state === "thinking") return interrupt(); // the shortcut silences it
     if (state === "listening" && !asleep) {
       asleep = true; // pressed again while listening: back to standby

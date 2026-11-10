@@ -70,6 +70,10 @@ def make_handler(store, api_key):
                 file, kind = store.file(*match.groups())
                 return self.reply(200, file.read_bytes(), kind)
             match = re.fullmatch(r"/parts/([^/]+)", path)
+            if self.command == "DELETE" and match:
+                with WORK:
+                    store.delete(match.group(1))
+                return self.reply(200, {"deleted": match.group(1)})
             if self.command == "GET" and match:
                 version = parse_qs(url.query).get("version", [None])[0]
                 return self.reply(200, store.get(match.group(1), int(version) if version else None))
@@ -104,7 +108,7 @@ def make_handler(store, api_key):
                 log.exception("request failed")
                 self.reply(500, {"error": "Error interno del servicio de piezas"})
 
-        do_GET = do_POST = dispatch
+        do_GET = do_POST = do_DELETE = dispatch
 
     return Handler
 
