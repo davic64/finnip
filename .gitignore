@@ -23,3 +23,7 @@ __pycache__/
 # Sistema y editor
 .DS_Store
 .idea/
+
+# Finnip desktop app (Tauri): Rust build output and generated schemas
+apps/finnip-desktop/src-tauri/target/
+apps/finnip-desktop/src-tauri/gen/

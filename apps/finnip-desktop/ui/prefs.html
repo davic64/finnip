@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Preferencias de Finnip</title>
+<style>
+  :root { color-scheme: dark; --holo: #38e1ff; }
+  body {
+    margin: 0;
+    padding: 28px 32px;
+    background: #05080f;
+    color: #dfe8f5;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  h1 { margin: 0 0 22px; font-size: 11px; font-weight: 600; letter-spacing: 0.35em; text-transform: uppercase; color: var(--holo); }
+  .label { font-size: 12px; color: #8a96b0; margin-bottom: 8px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .keys {
+    flex: 1;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    border: 1px solid color-mix(in srgb, var(--holo) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--holo) 6%, transparent);
+    font: 600 18px/1 -apple-system, system-ui, sans-serif;
+    letter-spacing: 0.08em;
+  }
+  .keys.recording { border-color: var(--holo); box-shadow: 0 0 12px color-mix(in srgb, var(--holo) 40%, transparent); color: #8a96b0; font-weight: 400; font-size: 14px; }
+  button {
+    height: 40px;
+    padding: 0 16px;
+    border: 1px solid color-mix(in srgb, var(--holo) 35%, transparent);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--holo); }
+  .msg { min-height: 20px; margin-top: 14px; font-size: 13px; }
+  .msg.error { color: #ff7a7a; }
+  .msg.ok { color: var(--holo); }
+  .hint { margin-top: 18px; font-size: 12px; color: #6b7690; }
+</style>
+</head>
+<body>
+  <h1>Finnip</h1>
+  <div class="label">Atajo para hablar sin decir «Finnip»</div>
+  <div class="row">
+    <div id="keys" class="keys"></div>
+    <button id="change">Cambiar</button>
+    <button id="reset">Restablecer</button>
+  </div>
+  <div id="msg" class="msg"></div>
+  <p class="hint">La pantalla donde aparece Finnip se elige en el menú del ícono de la barra superior.</p>
+<script>
+  // Local page bundled in the app: the only window allowed to call get_settings and set_shortcut.
+  const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+  const DEFAULT = "Alt+Super+F";
+  const SYMBOL = { Super: "⌘", Alt: "⌥", Control: "⌃", Shift: "⇧" };
+  const keys = document.getElementById("keys");
+  const msg = document.getElementById("msg");
+  let recording = false;
+
+  const pretty = (s) => s.split("+").map((p) => SYMBOL[p] || (p === "Space" ? "Espacio" : p)).join(" ");
+  const say = (text, kind = "") => { msg.textContent = text; msg.className = `msg ${kind}`; };
+  const show = (s) => { keys.textContent = pretty(s); keys.classList.remove("recording"); recording = false; };
+
+  // KeyboardEvent.code -> the key name the shortcut plugin understands.
+  function keyName(code) {
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit\d$/.test(code)) return code.slice(5);
+    if (/^F\d{1,2}$/.test(code)) return code;
+    return { Space: "Space", Enter: "Enter", Escape: null, Tab: "Tab", Backspace: "Backspace",
+             ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+             Comma: "Comma", Period: "Period", Slash: "Slash", Semicolon: "Semicolon", Quote: "Quote",
+             BracketLeft: "BracketLeft", BracketRight: "BracketRight", Minus: "Minus", Equal: "Equal",
+             Backquote: "Backquote", Backslash: "Backslash" }[code];
+  }
+
+  async function save(shortcut) {
+    try {
+      show(await invoke("set_shortcut", { shortcut }));
+      say("Listo: el nuevo atajo ya funciona.", "ok");
+    } catch (err) {
+      const current = await invoke("get_settings");
+      show(current.shortcut);
+      say(String(err), "error");
+    }
+  }
+
+  document.getElementById("change").addEventListener("click", () => {
+    recording = true;
+    keys.textContent = "Presiona la combinación…";
+    keys.classList.add("recording");
+    say("");
+  });
+  document.getElementById("reset").addEventListener("click", () => save(DEFAULT));
+
+  addEventListener("keydown", (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    if (["MetaLeft", "MetaRight", "AltLeft", "AltRight", "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight"].includes(e.code)) return;
+    if (e.code === "Escape") return invoke("get_settings").then((s) => { show(s.shortcut); say(""); });
+    const key = keyName(e.code);
+    const mods = [e.metaKey && "Super", e.altKey && "Alt", e.ctrlKey && "Control", e.shiftKey && "Shift"].filter(Boolean);
+    if (!key) return say("Esa tecla no se puede usar en un atajo.", "error");
+    if (!mods.length) return say("Incluye al menos ⌘, ⌥, ⌃ o ⇧.", "error");
+    save([...mods, key].join("+"));
+  });
+
+  invoke("get_settings").then((s) => show(s.shortcut));
+</script>
+</body>
+</html>

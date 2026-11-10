@@ -4,11 +4,25 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
 export type HoloState = "off" | "listening" | "thinking" | "speaking";
 
 const BG = 0x020409;
 const additive = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
+// Desktop overlay: the hologram is light on black, so each pixel's brightness becomes its opacity
+// (premultiplied): black is see-through and the glow adds onto the Mac's desktop. Bloom keeps no alpha.
+const GLOW_ALPHA = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+  fragmentShader:
+    "uniform sampler2D tDiffuse; varying vec2 vUv; void main() {" +
+    " vec4 c = texture2D(tDiffuse, vUv); float m = max(c.r, max(c.g, c.b));" +
+    // sRGB output lifts the bloom's faint haze; it must stay invisible, and the box must fade out round.
+    " float a = smoothstep(0.07, 0.55, m) * smoothstep(0.5, 0.4, distance(vUv, vec2(0.5)));" +
+    " gl_FragColor = vec4(c.rgb * min(1.0, a / max(m, 1e-4)), a); }", // only ever dims, never brightens
+};
+const BOX = 1.7; // desktop canvas side, relative to the anchor: room for the rings' glow
 
 function arcs(radius: number, spans: [number, number][], seg = 96) {
   const pts: number[] = [];
@@ -98,13 +112,16 @@ export class Holo {
   private lastRender = 0;
   state: HoloState = "off";
   shrink = false; // true while the stats HUD is on screen
+  paused = false; // desktop overlay: nothing on screen, nothing drawn
 
-  constructor(private canvas: HTMLCanvasElement, private anchor: HTMLElement) {
+  constructor(private canvas: HTMLCanvasElement, private anchor: HTMLElement, private transparent = false) {
     // GPU budget (measured by the user: 60% GPU on an M5 before this): no MSAA (the composer renders to
     // its own targets anyway), 1x pixels (the glow hides it), bloom at half resolution, throttled loop.
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power" });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power", alpha: transparent });
     this.renderer.setPixelRatio(1);
-    this.scene.background = new THREE.Color(BG);
+    // Desktop overlay: no background, the Mac's desktop shows through around the hologram.
+    if (transparent) this.renderer.setClearColor(0x000000, 0);
+    else this.scene.background = new THREE.Color(BG);
     this.camera.position.z = 6;
     this.scene.add(this.root);
     this.root.add(this.core);
@@ -147,7 +164,9 @@ export class Holo {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.45, 0.08);
     this.composer.addPass(this.bloom);
+    if (transparent) Object.assign(this.bloom, { strength: 0.45, radius: 0.3 }); // softer glow over the desktop
     this.composer.addPass(new OutputPass());
+    if (transparent) this.composer.addPass(new ShaderPass(GLOW_ALPHA));
 
     new ResizeObserver(() => this.resize()).observe(anchor);
     addEventListener("resize", () => this.resize());
@@ -164,6 +183,7 @@ export class Holo {
   }
 
   private resize() {
+    if (this.transparent) return this.resizeBox();
     const w = innerWidth;
     const h = innerHeight;
     this.renderer.setSize(w, h, false);
@@ -179,8 +199,30 @@ export class Holo {
     this.scale = (Math.min(r.width, r.height) * 0.46 * perPx) / 1.95;
   }
 
+  /** Desktop overlay: the canvas is only a square around the anchor, with the hologram on the camera's
+   *  axis (at a screen corner a full-screen perspective camera stretched it), and far fewer pixels. */
+  private resizeBox() {
+    const r = this.anchor.getBoundingClientRect();
+    const side = Math.round(Math.max(r.width, r.height) * BOX);
+    Object.assign(this.canvas.style, {
+      left: `${Math.round(r.left + r.width / 2 - side / 2)}px`,
+      top: `${Math.round(r.top + r.height / 2 - side / 2)}px`,
+      width: `${side}px`,
+      height: `${side}px`,
+    });
+    this.renderer.setSize(side, side, false);
+    this.composer.setSize(side, side);
+    this.bloom.setSize(side / 2, side / 2);
+    this.camera.aspect = 1;
+    this.camera.updateProjectionMatrix();
+    const viewH = 2 * this.camera.position.z * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    this.root.position.set(0, 0, 0);
+    this.scale = (Math.min(r.width, r.height) * 0.46 * (viewH / side)) / 1.95;
+  }
+
   /** Call every frame with the voice level (0-1) of whoever is talking. */
   frame(level: number) {
+    if (this.paused) return;
     // ponytail: fixed per-state frame caps; drop to on-demand rendering if idle still costs too much.
     const now = performance.now();
     const idle = this.state === "off";

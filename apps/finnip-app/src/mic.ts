@@ -15,6 +15,9 @@ export type MicHandlers = {
 export class Mic {
   private vad: MicVAD | null = null;
   private stream: MediaStream | null = null;
+  /** voiceProcessing false (desktop app, mic always open): on macOS echo cancellation turns on the system's
+   *  voice processing, which ducks every other app's audio while the mic is open (videos sounded quiet). */
+  constructor(private voiceProcessing = true) {}
 
   get isOpen() {
     return this.vad !== null;
@@ -24,7 +27,12 @@ export class Mic {
   async open(h: MicHandlers, onPermission: () => void = () => {}) {
     if (this.vad) return;
     this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        channelCount: 1,
+        echoCancellation: this.voiceProcessing,
+        noiseSuppression: this.voiceProcessing,
+        autoGainControl: this.voiceProcessing,
+      },
     });
     onPermission();
     const stream = this.stream;
