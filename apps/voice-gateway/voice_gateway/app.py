@@ -83,6 +83,17 @@ class Session:
             if audio is not None:
                 await self.ws.send_bytes(audio)
 
+    async def announce(self, text):
+        """Finnip speaks first (printer notices). Skipped while a reply is running: Telegram has it."""
+        if self.turn and not self.turn.done():
+            return
+        audio = await self.tts.synthesize(text)
+        self.sentences = [text]  # so its own voice through the mic is recognized as echo
+        await self.send({"type": "announce", "text": text})
+        await self.send({"type": "reply_text", "seq": 0, "text": text})
+        await self.send({"type": "audio", "seq": 0, "format": "mp3"}, audio)
+        await self.send({"type": "done"})
+
     async def run(self):
         try:
             while True:
@@ -147,7 +158,10 @@ class Session:
         elif kind == "utterance_start":
             self.stop_partials()
             self.audio, self.partial, self.partial_job = bytearray(), ("", 0), None
-            self.partials = asyncio.create_task(self.live_partials())
+            # Standby: no live transcripts. With music the "phrase" never ends, and re-transcribing all
+            # of it every 0.3 s pinned the CPU; one transcription per short window is enough for "Finnip".
+            if not data.get("wake"):
+                self.partials = asyncio.create_task(self.live_partials())
         elif kind == "utterance_abort":
             self.stop_partials()
             self.audio = bytearray()
@@ -291,11 +305,14 @@ async def _once(text):
 
 
 THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action cards (local HTTP, cheap)
+PRINTER_POLL = 3.0  # seconds between printer checks (OctoPrint on the Compose network)
 
 
-def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None):
+def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None,
+               printer=None, notify=None):
     if stt is None:
-        from .services import EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt, host_stats
+        from .services import (EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt, Printer,
+                               host_stats, telegram)
         stt, hermes, tts = ParakeetStt(), HermesClient(), EdgeTts()
         disk = os.environ.get("STATIC_DIR") or "/"
         stats = lambda: asyncio.to_thread(host_stats, disk)  # noqa: E731
@@ -305,6 +322,9 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         models_plugin, state = os.environ.get("MODELS_PLUGIN", ""), os.environ.get("MODEL_STATE", "")
         router = ModelRouter(models_plugin, state) if os.path.exists(models_plugin) and state else None
         hermes.router = router
+        printer_plugin = os.environ.get("PRINTER_PLUGIN", "")
+        printer = Printer(printer_plugin) if os.path.exists(printer_plugin) and os.environ.get("OCTOPRINT_API_KEY") else None
+        notify = telegram if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID") else None
 
     recent = {"text": "", "at": 0.0}
     theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
@@ -341,6 +361,19 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             except Exception as err:
                 log.warning("devices: %s", err)
             await asyncio.sleep(THEME_POLL)
+    async def follow_printer():
+        while True:
+            try:
+                for text in await printer.step():
+                    for session in list(sessions):
+                        with contextlib.suppress(Exception):
+                            await session.announce(text)
+                    if notify:
+                        with contextlib.suppress(Exception):
+                            await notify(text)
+            except Exception as err:
+                log.warning("printer: %s", err)
+            await asyncio.sleep(PRINTER_POLL)
     async def ws_endpoint(ws):
         if not allowed_user(ws.headers):
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
@@ -365,10 +398,10 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
     async def lifespan(app):
         if hasattr(stt, "load"):  # load the STT model before the first utterance, not during it
             await asyncio.to_thread(stt.load)
-        poller = asyncio.create_task(follow_monitors()) if monitor else None
+        tasks = [asyncio.create_task(f()) for f, on in ((follow_monitors, monitor), (follow_printer, printer)) if on]
         yield
-        if poller:
-            poller.cancel()
+        for task in tasks:
+            task.cancel()
 
     # gzip: the VAD's onnxruntime wasm goes from ~15 MB to ~4 MB, which matters over a Tailscale relay.
     middleware = [Middleware(TailscaleOnly), Middleware(GZipMiddleware, minimum_size=1024)]

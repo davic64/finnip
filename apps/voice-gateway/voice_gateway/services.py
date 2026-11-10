@@ -88,6 +88,22 @@ class ModelRouter:
     async def apply(self, order):
         """(what to tell the user, (provider, model) or None)."""
         return await asyncio.to_thread(self.plugin.apply_order, order, self.state_path)
+class Printer:
+    """Watcher side of the finnip-printer Hermes plugin (mounted read only): step() carries out what
+    waits for a temperature or for the print, and returns what Finnip has to say on its own."""
+    def __init__(self, path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_printer", path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+    async def step(self):
+        return await asyncio.to_thread(self.plugin.step)
+async def telegram(text):
+    """The same notice by Telegram (Finnip's bot, to the owner), for when the UI is not open."""
+    token, chat = os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+    async with httpx.AsyncClient(timeout=10) as http:
+        resp = await http.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text})
+        resp.raise_for_status()
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")

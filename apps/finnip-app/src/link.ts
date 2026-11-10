@@ -9,6 +9,7 @@ export type ServerEvent =
   | { type: "audio"; seq: number; format: string }
   | { type: "resume" }
   | { type: "wake" }
+  | { type: "announce"; text: string }
   | { type: "theme"; rgb: [number, number, number] }
   | {
       type: "now_playing"; active: boolean; state: string; title: string | null; artist: string | null;

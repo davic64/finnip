@@ -218,6 +218,14 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(self.hermes.closed, 0)
             self.assertEqual(len(self.hermes.prompts), 1)
 
+    def test_standby_utterances_get_no_live_transcripts(self):
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            ws.send_json({"type": "utterance_start", "wake": True})
+            ws.send_bytes(b"\x10\x27" * 16000)  # a second of loud audio
+            ws.send_json({"type": "utterance_end", "wake": True})
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+        self.assertEqual(self.stt.calls, 1)  # one transcription, no partials
+
     def test_standby_only_wakes_up_with_finnip(self):
         self.hermes.replies.append((["Listo."], False))
         with self.client.websocket_connect("/ws", headers=USER) as ws:
@@ -331,6 +339,24 @@ class GatewayTest(unittest.TestCase):
                 self.receive_until(ws, "done")
             self.assertEqual(self.hermes.prompts, [])  # never reached Hermes
             self.assertEqual(router.route(), ("openrouter", "z-ai/glm-5.3-prime"))
+
+
+class PrinterNoticeTest(unittest.TestCase):
+    @mock.patch.dict(os.environ, {"ALLOWED_TAILSCALE_USERS": "david@example.com"})
+    def test_printer_notice_is_spoken_and_sent_to_telegram(self):
+        class OnePrinterNotice:  # says it on every check: the first one may come before the client
+            async def step(self):
+                return ["Ya puedes meter el filamento."]
+        sent = []
+        async def notify(text):
+            sent.append(text)
+        app = create_app(FakeStt(), FakeHermes(), FakeTts(), printer=OnePrinterNotice(), notify=notify)
+        with mock.patch("voice_gateway.app.PRINTER_POLL", 0.05), TestClient(app) as client:
+            with client.websocket_connect("/ws", headers=USER) as ws:
+                got = GatewayTest.receive_until(None, ws, "done")
+        self.assertEqual(got[0], {"type": "announce", "text": "Ya puedes meter el filamento."})
+        self.assertIn(b"mp3:Ya puedes meter el filamento.", got)
+        self.assertEqual(sent[0], "Ya puedes meter el filamento.")
 
 
 if __name__ == "__main__":
