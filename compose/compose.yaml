@@ -13,6 +13,7 @@ services:
     env_file:
         - ../config/hermes-bridge.env
         - ../config/printer.env
+        - ../config/parts.env
     environment:
       FINNIP_BRIDGE_URL: http://home-bridge:3000
       # API server reachable inside the Compose network only (no published port); voice-gateway uses it.
@@ -47,6 +48,27 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # 3D parts (apps/finnip-parts): OpenSCAD -> STL and CuraEngine slicing. Compose network only, no
+  # published port; runs model-written code, so read-only, no capabilities and capped memory.
+  parts:
+    build:
+      context: ../apps/finnip-parts
+    container_name: finnip-parts
+    restart: unless-stopped
+    env_file:
+      - ../config/parts.env
+    environment:
+      HOME: /tmp
+    volumes:
+      - ../data/parts:/data/parts
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 128
   # 3D printer (USB serial, CH340). Web UI at http://print.finnip through Caddy.
   octoprint:
     image: octoprint/octoprint:latest
