@@ -1,7 +1,8 @@
 // Finnip for macOS: a transparent, click-through overlay that shows the voice gateway's page
 // (?desktop=1 mode), plus a menu bar icon, a global shortcut and the user's preferences.
-// The remote page gets no native API: this side only talks to it through `eval` of a tiny hook
-// (window.finnipDesktop). Only the local Preferences window may call commands (capabilities/prefs.json).
+// The remote page gets almost no native API: this side talks to it through `eval` of a tiny hook
+// (window.finnipDesktop), and the page may call one command, part_box, to say where an open 3D part is
+// (the only place the overlay then takes the mouse). The local Preferences window may call the rest.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -16,6 +17,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{
     image::Image,
+    ipc::CapabilityBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, LogicalPosition, LogicalSize, Manager, Monitor, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -31,6 +33,8 @@ const FINNIP_URL: &str = match option_env!("FINNIP_URL") {
 const DEFAULT_SHORTCUT: &str = "Alt+Super+F";
 const TRAY: &str = "finnip";
 const WATCH_EVERY: Duration = Duration::from_secs(5); // monitors every tick, gateway health every other
+const CURSOR_EVERY: Duration = Duration::from_millis(40); // while a part is open
+const CURSOR_IDLE: Duration = Duration::from_millis(250);
 
 // --- preferences -----------------------------------------------------------------------------------
 
@@ -82,6 +86,8 @@ struct Finnip {
     visible: AtomicBool,
     online: AtomicBool,
     shown_on: Mutex<Option<String>>, // monitor the overlay is on now
+    /// The open 3D part's box in the overlay ([x, y, width, height], CSS pixels), or None.
+    part_box: Mutex<Option<[f64; 4]>>,
 }
 
 fn page_url() -> String {
@@ -322,6 +328,44 @@ fn open_prefs(app: &AppHandle) {
     }
 }
 
+/// The overlay page says where the open 3D part is, or None once it closes.
+#[tauri::command]
+fn part_box(state: tauri::State<Finnip>, rect: Option<[f64; 4]>) {
+    *state.part_box.lock().unwrap() = rect.filter(|r| r.iter().all(|v| v.is_finite()) && r[2] > 0.0 && r[3] > 0.0);
+}
+
+/// Whether a cursor at (x, y), in the overlay's CSS pixels, is over the part's box.
+fn over_part(rect: Option<[f64; 4]>, x: f64, y: f64) -> bool {
+    rect.is_some_and(|[left, top, width, height]| x >= left && x <= left + width && y >= top && y <= top + height)
+}
+
+/// While a 3D part is open, the overlay takes the mouse only with the cursor over the part's box, so it
+/// can be turned and zoomed; everywhere else clicks keep going to the apps underneath.
+fn follow_cursor(app: AppHandle) {
+    let mut capturing = false;
+    loop {
+        let rect = *app.state::<Finnip>().part_box.lock().unwrap();
+        let over = match (rect, overlay(&app)) {
+            (Some(_), Some(window)) => match (app.cursor_position(), window.outer_position(), window.scale_factor()) {
+                (Ok(cursor), Ok(origin), Ok(scale)) => over_part(
+                    rect,
+                    (cursor.x - f64::from(origin.x)) / scale,
+                    (cursor.y - f64::from(origin.y)) / scale,
+                ),
+                _ => false,
+            },
+            _ => false,
+        };
+        if over != capturing {
+            capturing = over;
+            if let Some(window) = overlay(&app) {
+                let _ = window.set_ignore_cursor_events(!over);
+            }
+        }
+        thread::sleep(if rect.is_some() { CURSOR_EVERY } else { CURSOR_IDLE });
+    }
+}
+
 #[tauri::command]
 fn get_settings(state: tauri::State<Finnip>) -> Settings {
     state.settings.lock().unwrap().clone()
@@ -362,7 +406,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![get_settings, set_shortcut])
+        .invoke_handler(tauri::generate_handler![get_settings, set_shortcut, part_box])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory); // no Dock icon, no Cmd-Tab
@@ -386,7 +430,15 @@ fn main() {
                 visible: AtomicBool::new(true),
                 online: AtomicBool::new(true),
                 shown_on: Mutex::new(None),
+                part_box: Mutex::new(None),
             });
+            // The overlay page (and only it, at FINNIP_URL) may call part_box.
+            app.add_capability(
+                CapabilityBuilder::new("overlay-part")
+                    .remote(format!("{}/*", FINNIP_URL.trim_end_matches('/')))
+                    .window("overlay")
+                    .permission("allow-part-box"),
+            )?;
 
             let overlay = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::External(page_url().parse()?))
                 .title("Finnip")
@@ -412,7 +464,9 @@ fn main() {
                 .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
                 .build(app)?;
 
+            let cursor = handle.clone();
             thread::spawn(move || watch(handle));
+            thread::spawn(move || follow_cursor(cursor));
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -447,6 +501,16 @@ mod tests {
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(&path), settings);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn the_mouse_is_taken_only_over_the_part() {
+        let rect = Some([100.0, 50.0, 400.0, 400.0]);
+        assert!(over_part(rect, 300.0, 250.0));
+        assert!(over_part(rect, 100.0, 450.0)); // on the edge
+        assert!(!over_part(rect, 99.0, 250.0));
+        assert!(!over_part(rect, 300.0, 451.0));
+        assert!(!over_part(None, 300.0, 250.0)); // no part open
     }
 
     #[test]

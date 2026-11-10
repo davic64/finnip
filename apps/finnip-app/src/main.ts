@@ -2,12 +2,14 @@ import "./style.css";
 import { Link } from "./link";
 import { Mic } from "./mic";
 import { Player } from "./player";
-import { Holo } from "./holo";
+import { glowColor, Holo } from "./holo";
 import { Hud } from "./hud";
 import { showCard } from "./cards";
 import { showAgenda } from "./agenda";
 import { showNowPlaying } from "./nowplaying";
 import { MusicNotice, sceneFor } from "./desktop";
+import { Hands } from "./hands";
+import { PartView } from "./part";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -31,9 +33,42 @@ try {
   console.error("sin WebGL", err); // the orb button still works, just without the hologram
 }
 
+// 3D part viewer (desktop only). Its box is the only place where the macOS app takes the mouse: the page
+// reports it through the one command the app allows it (part_box); the gateway learns whether a part is
+// open, so short view orders ("vista de arriba") go to the viewer instead of Hermes.
+type TauriIpc = { invoke: (cmd: string, args: object) => Promise<unknown> };
+const tauri = (window as unknown as { __TAURI_INTERNALS__?: TauriIpc }).__TAURI_INTERNALS__;
+let partView: PartView | null = null;
+// Hand gestures on the open part; the camera runs only while a part is open.
+const hands = desktop
+  ? new Hands(
+      (a) => {
+        if (a.kind === "rotate") partView?.rotateBy(a.dx, a.dy);
+        else if (a.kind === "zoom") partView?.zoomBy(a.factor);
+        else partView?.view(a.kind);
+      },
+      (on, error) => {
+        partView?.setHands(on, error);
+        if (error) console.error("cámara", error);
+      },
+    )
+  : null;
+if (desktop && holo) {
+  try {
+    partView = new PartView($("part"), $("part-hit"), $("part-label"), (open, rect) => {
+      link.send({ type: "part_open", open });
+      void tauri?.invoke("part_box", { rect }).catch(() => {});
+      if (open) void hands?.start();
+      else hands?.stop();
+    });
+  } catch (err) {
+    console.error("sin visor de piezas", err);
+  }
+}
 // Hologram color = the monitors' LED color (sent by the server; remembered while they are off).
 function setTheme(rgb: [number, number, number]) {
   holo?.setColor(rgb);
+  partView?.setColor(glowColor(rgb));
   const [h, s, l] = rgbToHsl(rgb);
   document.documentElement.style.setProperty("--holo", `hsl(${h} ${s}% ${Math.max(l, 45)}%)`);
   try {
@@ -323,6 +358,12 @@ link.onEvent = (e) => {
     case "stats":
       if (acceptAudio) hud.show(e);
       break;
+    case "part":
+      void partView?.show(e).catch((err) => console.error("pieza", err));
+      break;
+    case "part_view":
+      partView?.view(e.view);
+      break;
     case "error":
       statusEl.textContent = e.message;
       break;
@@ -361,9 +402,10 @@ const levels = new Uint8Array(128);
     level = speechLevel;
   }
   if (desktop) {
-    const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"));
+    const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"), partView?.open);
     if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene;
-    if (holo) holo.paused = scene === "hidden" && !holoFading(); // no drawing while nothing is shown
+    // No drawing while nothing is shown, nor behind an open part.
+    if (holo) holo.paused = (scene === "hidden" && !holoFading()) || scene === "part";
   }
   if (holo) {
     holo.state = state === "standby" ? "off" : state;

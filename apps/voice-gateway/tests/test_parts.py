@@ -7,6 +7,7 @@ from unittest import mock
 from starlette.testclient import TestClient
 
 from tests.test_app import USER, FakeHermes, FakeStt, FakeTts
+from voice_gateway import text as T
 from voice_gateway.app import create_app
 
 KEY = "p" * 32
@@ -95,6 +96,42 @@ class PartsGatewayTest(unittest.TestCase):
         self.assertEqual(self.photo({"jpeg": base64.b64encode(b"not a jpeg").decode()}).status_code, 502)
         with mock.patch("voice_gateway.app.PHOTO_TIMEOUT", 0.2):
             self.assertEqual(self.photo(None).status_code, 504)
+
+    def test_view_orders_go_to_the_open_part_without_hermes(self):
+        hermes = FakeHermes()
+        app = create_app(FakeStt(), hermes, FakeTts(), parts=self.parts)
+        with TestClient(app) as client, client.websocket_connect("/ws", headers=USER) as desktop:
+            desktop.send_json({"type": "hello", "client": "desktop"})
+            desktop.receive_json()
+            desktop.send_bytes(b"Vista de arriba.")  # no part open yet: it goes to Hermes
+            hermes.replies.append((["Claro."], False))
+            desktop.send_json({"type": "utterance_end"})
+            got = [desktop.receive_json() for _ in range(2)]
+            self.assertEqual(got[0], {"type": "transcript", "text": "Vista de arriba."})
+            self.assertEqual(hermes.prompts, ["Vista de arriba."])
+            while '"done"' not in (desktop.receive().get("text") or ""):
+                pass  # the reply's sentences and audio
+            desktop.send_json({"type": "part_open", "open": True})
+            desktop.send_bytes("Gírala, por favor.".encode())
+            desktop.send_json({"type": "utterance_end"})
+            self.assertEqual([desktop.receive_json() for _ in range(3)], [
+                {"type": "transcript", "text": "Gírala, por favor."}, {"type": "part_view", "view": "spin"}, {"type": "done"}])
+            self.assertEqual(len(hermes.prompts), 1)
+
+
+class PartViewTextTest(unittest.TestCase):
+    def test_orders(self):
+        cases = {
+            "Vista de arriba.": "top", "Finnip, ponla de frente": "front", "vista lateral": "side",
+            "Cierra la pieza.": "close", "quítala": "close", "Gírala": "spin", "deja de girarla": "still",
+            "Más cerca, por favor": "closer", "aléjala": "farther", "Vista inicial": "reset", "desde abajo": "bottom",
+            "enséñala de lado": "side",
+        }
+        for text, view in cases.items():
+            self.assertEqual(T.part_view(text), view, text)
+        for text in ("Cierra la puerta del garaje", "¿Qué hay arriba en mi agenda?", "Hazla 5 mm más alta",
+                     "gira la lámpara a la izquierda", ""):
+            self.assertIsNone(T.part_view(text), text)
 
 
 if __name__ == "__main__":

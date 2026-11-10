@@ -390,3 +390,23 @@ body[data-state="thinking"] .status { animation: blink 1s steps(2) infinite; }
 .desktop .cards { position: fixed; top: auto; right: 320px; bottom: 60px; }
 .desktop .np { position: fixed; top: 36px; left: auto; right: 36px; }
 .desktop-off body { visibility: hidden; }
+/* 3D part (part.ts): full screen over the dimmed desktop, the mouse only in the central square (part-hit);
+   the core hides meanwhile. */
+.part { display: none; }
+.desktop .part { display: block; position: fixed; inset: 0; pointer-events: none; }
+.desktop .part[hidden] { display: none; }
+.desktop .part canvas { width: 100%; height: 100%; display: block; }
+.part-hit { position: absolute; left: 50%; top: 50%; width: min(60vmin, 640px); aspect-ratio: 1;
+  transform: translate(-50%, -50%); cursor: grab; touch-action: none; pointer-events: auto; }
+.part-hit:active { cursor: grabbing; }
+.part-label { position: absolute; left: 0; right: 0; bottom: 6%; margin: 0; text-align: center;
+  color: var(--holo, #38e1ff); font: 600 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em; text-shadow: 0 0 12px currentColor; pointer-events: none; }
+.part-close { position: absolute; top: 0; right: 0; width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--holo, #38e1ff); background: rgba(2, 4, 9, 0.5); color: var(--holo, #38e1ff);
+  font-size: 20px; line-height: 1; cursor: pointer; }
+.desktop .part.hands-on .part-label::after { content: " · ✋"; } /* the camera is following the hands */
+.desktop .part::after { content: attr(data-hands-error); position: absolute; left: 0; right: 0; bottom: 3%;
+  text-align: center; color: #ff8a7a; font: 12px/1.4 ui-monospace, Menlo, monospace; pointer-events: none; }
+.desktop body[data-scene="part"] .holo { opacity: 0; }
+.desktop body[data-scene="part"]::before { opacity: 1; }

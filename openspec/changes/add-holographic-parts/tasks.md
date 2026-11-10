@@ -21,13 +21,13 @@
 
 ## 4. Holograma de la pieza
 
-- [ ] 4.1 Visor STL en el overlay: aristas y superficie tenue con el color y el bloom actuales, medidas en mm, núcleo oculto mientras está abierta. Verificar a ojo con el cubo y una pieza real.
+- [x] 4.1 Visor STL en el overlay: aristas y superficie tenue con el color y el bloom actuales, medidas en mm, núcleo oculto mientras está abierta. Verificar a ojo con el cubo y una pieza real.
 - [ ] 4.2 Mouse solo sobre el recuadro de la pieza (arrastrar gira, rueda acerca) y comandos de voz de vista resueltos en la app. Verificar que fuera del recuadro los clics siguen llegando a las demás apps.
 
 ## 5. Gestos
 
-- [ ] 5.1 Incluir `@mediapipe/tasks-vision` y el modelo de manos en la app, sin CDN. Encender la cámara al abrir una pieza y apagarla al cerrarla.
-- [ ] 5.2 Gestos: pellizco y arrastre gira, dos manos acercan, mano abierta 1 s restablece la vista, puño cierra. Verificar con la cámara de la Mac.
+- [x] 5.1 Incluir `@mediapipe/tasks-vision` y el modelo de manos en la app, sin CDN. Encender la cámara al abrir una pieza y apagarla al cerrarla.
+- [x] 5.2 Gestos: pellizco y arrastre gira, dos manos acercan, mano abierta 1 s restablece la vista, puño cierra. Verificar con la cámara de la Mac.
 - [ ] 5.3 Agregar `NSCameraUsageDescription` a la app de escritorio y recompilarla. Verificar que macOS pide permiso una vez y que la luz de la cámara se apaga al cerrar la pieza.
 
 ## 6. Medidas

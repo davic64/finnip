@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node copy-vad-assets.mjs",
+    "build": "tsc --noEmit && vite build && node copy-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/"
   },
@@ -13,6 +13,7 @@
     "vite": "^8.3.6"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.2.2",
     "@ricky0123/vad-web": "^0.0.31",
     "@types/three": "^0.181.0",
     "lucide": "^0.553.0",

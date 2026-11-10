@@ -88,6 +88,8 @@ class Session:
         self.desktop = False      # the macOS overlay (hello client "desktop"): shows parts, has the camera
         self.hello_at = 0.0
         self.photos = {}          # shared by create_app: photo request id -> future for its reply
+        self.part = {"open": False}  # shared by create_app: a 3D part is open on a desktop app
+        self.to_desktops = None   # set by create_app: async (event) -> sent to every desktop app
         self.lock = asyncio.Lock()
 
     async def send(self, obj, audio=None):
@@ -170,6 +172,9 @@ class Session:
                 await self.send({"type": "theme", "rgb": self.theme["rgb"]})
             if (self.theme.get("playing") or {}).get("active"):
                 await self.send(self.theme["playing"])
+        elif kind == "part_open":
+            if self.desktop:
+                self.part["open"] = bool(data.get("open"))
         elif kind == "photo":
             future = self.photos.get(data.get("id"))
             if future and not future.done():
@@ -240,6 +245,12 @@ class Session:
         if busy and not barge_in and (not transcript or (self.spoke and T.is_echo(transcript, self.sentences))):
             # Noise, the chime or Finnip's own voice while a reply runs: never cancel the reply for it.
             await self.send({"type": "transcript", "text": ""})
+            return
+        view = T.part_view(transcript) if self.part["open"] and transcript and self.to_desktops else None
+        if view:  # "vista de arriba", "cierra la pieza": the overlay moves the part, Hermes is not asked
+            await self.send({"type": "transcript", "text": transcript})
+            await self.to_desktops({"type": "part_view", "view": view})
+            await self.send({"type": "done"})
             return
         now = time.monotonic()
         if transcript and transcript == self.recent["text"] and now - self.recent["at"] < DUPLICATE_WINDOW:
@@ -359,6 +370,7 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
     theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
     sessions = set()
     photos = {}       # photo request id -> future, answered by the desktop app's "photo" message
+    part = {"open": False}  # a desktop app has a 3D part open (it says so with "part_open")
 
     seen = {}         # device id -> (state, brightness, rgb) from the previous poll
     async def broadcast(obj):
@@ -411,6 +423,8 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         await ws.accept()
         session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router)
         session.photos = photos
+        session.part = part
+        session.to_desktops = to_desktops
         sessions.add(session)
         try:
             await session.run()
@@ -424,6 +438,11 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         key = os.environ.get("PARTS_API_KEY", "")
         given = request.headers.get("authorization", "")
         return len(key) >= 32 and hmac.compare_digest(given.encode(), f"Bearer {key}".encode())
+
+    async def to_desktops(event):
+        for session in desktops():
+            with contextlib.suppress(Exception):
+                await session.send(event)
 
     def desktops():
         """Connected desktop apps, the most recent first (a reopened app may leave an old socket behind)."""

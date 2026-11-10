@@ -12,16 +12,17 @@ const BG = 0x020409;
 const additive = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
 // Desktop overlay: the hologram is light on black, so each pixel's brightness becomes its opacity
 // (premultiplied): black is see-through and the glow adds onto the Mac's desktop. Bloom keeps no alpha.
-const GLOW_ALPHA = {
+// round: the core's square box fades out as a circle; the full-screen part viewer must not.
+export const glowAlpha = (round = true) => ({
   uniforms: { tDiffuse: { value: null } },
   vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
   fragmentShader:
     "uniform sampler2D tDiffuse; varying vec2 vUv; void main() {" +
     " vec4 c = texture2D(tDiffuse, vUv); float m = max(c.r, max(c.g, c.b));" +
     // sRGB output lifts the bloom's faint haze; it must stay invisible, and the box must fade out round.
-    " float a = smoothstep(0.07, 0.55, m) * smoothstep(0.5, 0.4, distance(vUv, vec2(0.5)));" +
+    ` float a = smoothstep(0.07, 0.55, m)${round ? " * smoothstep(0.5, 0.4, distance(vUv, vec2(0.5)))" : ""};` +
     " gl_FragColor = vec4(c.rgb * min(1.0, a / max(m, 1e-4)), a); }", // only ever dims, never brightens
-};
+});
 const BOX = 1.7; // desktop canvas side, relative to the anchor: room for the rings' glow
 
 function arcs(radius: number, spans: [number, number][], seg = 96) {
@@ -87,6 +88,15 @@ const FRAG = /* glsl */ `
     if (d > 0.5) discard;
     gl_FragColor = vec4(uColor, vAlpha * uOpacity * smoothstep(0.5, 0.05, d));
   }`;
+
+/** The monitors' LED color as the hologram draws it: very dark colors are lifted so it still glows. */
+export function glowColor(rgb: [number, number, number]) {
+  const c = new THREE.Color().setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace);
+  // HSL in sRGB, like the LED's own numbers; in linear space lifting lightness tinted blue violet.
+  const hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl, THREE.SRGBColorSpace);
+  return c.setHSL(hsl.h, hsl.s, Math.max(hsl.l, 0.45), THREE.SRGBColorSpace);
+}
 
 export class Holo {
   private renderer: THREE.WebGLRenderer;
@@ -170,7 +180,7 @@ export class Holo {
     this.composer.addPass(this.bloom);
     if (transparent) Object.assign(this.bloom, { strength: 0.75, radius: 0.4 }); // softer than the app, but its 700 points need it
     this.composer.addPass(new OutputPass());
-    if (transparent) this.composer.addPass(new ShaderPass(GLOW_ALPHA));
+    if (transparent) this.composer.addPass(new ShaderPass(glowAlpha()));
 
     new ResizeObserver(() => this.resize()).observe(anchor);
     addEventListener("resize", () => this.resize());
@@ -179,11 +189,7 @@ export class Holo {
 
   /** Monitor color as is; only very dark colors are lifted so the hologram still glows. */
   setColor(rgb: [number, number, number]) {
-    const c = new THREE.Color().setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace);
-    // HSL in sRGB, like the LED's own numbers; in linear space lifting lightness tinted blue violet.
-    const hsl = { h: 0, s: 0, l: 0 };
-    c.getHSL(hsl, THREE.SRGBColorSpace);
-    this.target.setHSL(hsl.h, hsl.s, Math.max(hsl.l, 0.45), THREE.SRGBColorSpace);
+    this.target.copy(glowColor(rgb));
   }
 
   private resize() {
