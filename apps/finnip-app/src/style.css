@@ -365,3 +365,28 @@ body[data-state="thinking"] .status { animation: blink 1s steps(2) infinite; }
 @media (prefers-reduced-motion: reduce) {
   .gauge { transition: opacity 0.3s; transform: none; filter: none; }
 }
+
+/* Desktop overlay (?desktop=1, macOS app): transparent window over the Mac, scenes set by desktop.ts.
+   hidden: nothing; corner: hologram bottom right; center: hologram and panel over a dimmed desktop. */
+.desktop, .desktop body { background: transparent; }
+.desktop .scan, .desktop .top, .desktop .readout { display: none; }
+.desktop .holo { right: auto; bottom: auto; } /* holo.ts sizes it to a square around the anchor */
+.desktop .app { max-width: none; }
+.desktop .orb { position: fixed; visibility: hidden; right: 36px; bottom: 36px; width: 260px; max-height: none; }
+.desktop body[data-scene="center"] .orb { right: calc(50vw - 200px); bottom: calc(50vh - 200px); width: 400px; }
+.desktop body[data-scene="hidden"] .holo { opacity: 0; }
+.desktop body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 4, 9, 0.62);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+}
+.desktop body[data-scene="center"]::before { opacity: 1; }
+.desktop .hud { position: fixed; inset: calc(50vh - 260px) calc(50vw - 300px); }
+.desktop .agenda { position: fixed; top: 50%; }
+.desktop .cards { position: fixed; top: auto; right: 320px; bottom: 60px; }
+.desktop .np { position: fixed; top: 36px; left: auto; right: 36px; }
+.desktop-off body { visibility: hidden; }

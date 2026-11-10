@@ -7,6 +7,7 @@ import { Hud } from "./hud";
 import { showCard } from "./cards";
 import { showAgenda } from "./agenda";
 import { showNowPlaying } from "./nowplaying";
+import { MusicNotice, sceneFor } from "./desktop";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -20,9 +21,12 @@ const statusEl = $("status");
 const metricsEl = $("metrics");
 const net = $("net");
 const hud = new Hud($("hud"));
+// Inside the macOS app: transparent overlay with scenes (desktop.ts) instead of the full-screen UI.
+const desktop = new URLSearchParams(location.search).has("desktop");
+if (desktop) document.documentElement.classList.add("desktop");
 let holo: Holo | null = null;
 try {
-  holo = new Holo($<HTMLCanvasElement>("holo"), $("orb"));
+  holo = new Holo($<HTMLCanvasElement>("holo"), $("orb"), desktop);
 } catch (err) {
   console.error("sin WebGL", err); // the orb button still works, just without the hologram
 }
@@ -63,7 +67,7 @@ const saveSettings = () => {
 };
 
 const link = new Link();
-const mic = new Mic();
+const mic = new Mic(!desktop); // desktop: no voice processing, so other audio is not ducked
 let player = null as Player | null;
 let mode = "conversation" as Mode;
 let state = "off" as State;
@@ -112,7 +116,9 @@ function getPlayer() {
   if (!player) {
     player = new Player();
     player.onStart = () => {
-      mic.setMuted(true); // Finnip never hears itself; interrupt it with a tap
+      // Finnip never hears itself; interrupt it with a tap. Desktop: no taps, so the mic stays open and
+      // only "Finnip, …" counts while it speaks (the server drops its own voice as echo).
+      if (!desktop) mic.setMuted(true);
       setState("speaking");
     };
     player.onIdle = () => {
@@ -138,17 +144,24 @@ let streaming = false;
 // Standby: "Finnip" opens the phrase, so a long sound (music) is cut into windows the server
 // transcribes once each, instead of one endless phrase.
 const WAKE_WINDOW_MS = 4000;
+// Each window starts with the last ~1 s of the previous one, so a "Finnip" cut at the edge is whole.
+const OVERLAP_FRAMES = 32; // Silero v5 frames are 32 ms
+const recentFrames: Float32Array[] = [];
 let wakeWindow = 0;
+let bargeIn = false; // this phrase started while Finnip was speaking (desktop)
 
 function startUtterance() {
   streaming = true;
-  link.send({ type: "utterance_start", ...(asleep ? { wake: true } : {}) });
+  bargeIn = !!player?.isSpeaking;
+  const guarded = asleep || bargeIn; // only a phrase with "Finnip" counts
+  link.send({ type: "utterance_start", ...(guarded ? { wake: true } : {}) });
   clearTimeout(wakeWindow);
-  if (asleep)
+  if (guarded)
     wakeWindow = window.setTimeout(() => {
-      if (!streaming || !asleep) return;
+      if (!streaming || !(asleep || bargeIn)) return;
       finishUtterance();
       startUtterance(); // still sounding: next window
+      recentFrames.forEach((f) => link.sendFrame(f));
     }, WAKE_WINDOW_MS);
 }
 function abortUtterance() {
@@ -160,6 +173,8 @@ function abortUtterance() {
 function finishUtterance() {
   streaming = false;
   clearTimeout(wakeWindow);
+  if (bargeIn) // while it speaks: "Finnip, para" stops it, "Finnip, …" asks something new
+    return link.send({ type: "utterance_end", wake: true, barge_in: true, ...(player?.played() ?? { played_seq: 0, played_ms: 0 }) });
   if (asleep) return link.send({ type: "utterance_end", wake: true }); // the server checks for "Finnip"
   link.send({ type: "utterance_end" });
   t.end = performance.now();
@@ -171,7 +186,7 @@ function finishUtterance() {
 
 const handlers = {
   onSpeechStart() {
-    if (player?.isSpeaking || !link.online) return;
+    if ((player?.isSpeaking && !desktop) || !link.online) return;
     startUtterance();
     preSpeech.splice(0).forEach((f) => link.sendFrame(f));
   },
@@ -181,11 +196,13 @@ const handlers = {
   },
   onSpeechEnd() {
     if (!streaming) return;
-    if (player?.isSpeaking) return abortUtterance();
+    if (player?.isSpeaking && !desktop) return abortUtterance();
     finishUtterance();
     if (mode === "single") void mic.close().then(() => setState(state));
   },
   onFrame(frame: Float32Array) {
+    recentFrames.push(frame);
+    if (recentFrames.length > OVERLAP_FRAMES) recentFrames.shift();
     if (streaming) return link.sendFrame(frame);
     preSpeech.push(frame);
     if (preSpeech.length > PRE_SPEECH_FRAMES) preSpeech.shift();
@@ -261,6 +278,10 @@ link.onStatus = (online) => {
 link.onEvent = (e) => {
   switch (e.type) {
     case "wake":
+      if (player?.isSpeaking) {
+        acceptAudio = false; // barge-in: silence it now; a new reply's transcript turns audio back on
+        player.flush();
+      }
       asleep = false;
       void getPlayer().unlock(); // allowed without a tap while the mic is capturing
       player?.chime();
@@ -287,8 +308,13 @@ link.onEvent = (e) => {
       showCard(e);
       break;
     case "now_playing":
-      showNowPlaying(e);
       musicOn = e.active && e.state === "playing";
+      if (!desktop) showNowPlaying(e);
+      else if (musicNotice.shouldShow(e)) {
+        showNowPlaying(e); // a new song: shown for a moment, then it fades
+        clearTimeout(noticeTimer);
+        noticeTimer = window.setTimeout(() => showNowPlaying({ ...e, active: false }), MUSIC_NOTICE_MS);
+      } else if (!musicOn) showNowPlaying(e); // paused or stopped: hide it
       if (musicOn && state === "listening" && !streaming) setState(restingState());
       break;
     case "reminders":
@@ -312,6 +338,16 @@ link.onAudio = (seq, mp3) => {
   void getPlayer().enqueue(seq, mp3);
 };
 
+// Desktop: music notice timing, and the hologram keeps drawing while it fades out (0.6 s in CSS).
+const MUSIC_NOTICE_MS = 6000;
+const musicNotice = new MusicNotice();
+let noticeTimer = 0;
+let hiddenSince = 0;
+function holoFading() {
+  if (document.body.dataset.scene !== "hidden") return (hiddenSince = 0), true;
+  hiddenSince ||= performance.now();
+  return performance.now() - hiddenSince < 700;
+}
 // Orb reacts to the user's voice while listening and to Finnip's voice while speaking.
 const levels = new Uint8Array(128);
 (function animate() {
@@ -323,6 +359,11 @@ const levels = new Uint8Array(128);
     level = Math.min(1, Math.sqrt(sum / levels.length) * 4);
   } else if (state === "listening") {
     level = speechLevel;
+  }
+  if (desktop) {
+    const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"));
+    if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene;
+    if (holo) holo.paused = scene === "hidden" && !holoFading(); // no drawing while nothing is shown
   }
   if (holo) {
     holo.state = state === "standby" ? "off" : state;
@@ -364,9 +405,33 @@ showMetrics();
 link.connect();
 setTimeout(Mic.preload, 1500);
 
+// Desktop app: always listening in standby; the app's menu bar and shortcut call these (webview eval).
+if (desktop) {
+  const talk = () => {
+    void getPlayer().unlock();
+    if (!mic.isOpen) return void openMic().then(talk);
+    if (state === "speaking" || state === "thinking") return interrupt(); // the shortcut silences it
+    if (state === "listening" && !asleep) {
+      asleep = true; // pressed again while listening: back to standby
+      return setState("standby");
+    }
+    asleep = false; // the next phrase is for Finnip, no wake word needed
+    player?.chime();
+    setState("listening");
+  };
+  const mute = (on: boolean) => {
+    if (on) return void closeMic().then(() => setState("off"));
+    asleep = true;
+    void openMic();
+  };
+  const visible = (on: boolean) => document.documentElement.classList.toggle("desktop-off", !on);
+  Object.assign(window, { finnipDesktop: { talk, mute, visible } });
+  asleep = true;
+  void openMic();
+}
 // Mic already allowed: open straight into standby, waiting for "Finnip". Otherwise the first tap
 // asks for permission (browsers only show that prompt after a gesture).
-void (async () => {
+if (!desktop) void (async () => {
   try {
     const perm = await navigator.permissions.query({ name: "microphone" as PermissionName });
     if (perm.state !== "granted" || mode !== "conversation") return;

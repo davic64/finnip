@@ -63,8 +63,13 @@ class StatsIntentTest(unittest.TestCase):
     def test_server_questions(self):
         self.assertTrue(T.wants_stats("¿Cómo está el servidor?"))
         self.assertTrue(T.wants_stats("cuánta RAM estoy usando"))
+        self.assertTrue(T.wants_stats("¿cómo va mi servidor?"))
+        self.assertTrue(T.wants_stats("dame el estatus del servidor"))
         self.assertFalse(T.wants_stats("apaga la lámpara"))
         self.assertFalse(T.wants_stats("¿qué hora es?"))
+        self.assertFalse(T.wants_stats("reinicia el servidor de Minecraft"))  # only the word "servidor"
+        self.assertFalse(T.wants_stats("en el servidor tengo OctoPrint"))
+        self.assertFalse(T.wants_stats("recuérdalo en tu memoria"))
 
 
 
@@ -84,10 +89,25 @@ class WakeWordTest(unittest.TestCase):
         self.assertEqual(T.after_wake_word("Y Phinnip qué hora es"), "qué hora es")
         self.assertEqual(T.after_wake_word("Phillip, pausa"), "pausa")
 
+    def test_anywhere_in_a_standby_window(self):
+        self.assertEqual(T.after_wake_word("and then the installation Finnip, pausa el video", anywhere=True),
+                         "pausa el video")
+        self.assertEqual(T.after_wake_word("eso dijo Philip. Qué hora es", anywhere=True), "Qué hora es")
+        for text in ("el final de la serie", "fino y rápido", "la TV dice fin", "Jarvis installation guide"):
+            self.assertIsNone(T.after_wake_word(text, anywhere=True), text)
+
     def test_other_speech_stays_asleep(self):
         for text in ("apaga la lámpara", "fin de semana", "oye, ¿qué hora es?", "", "la TV dice Finnip",
                      "Final de temporada", "fino el vino", "y luego qué"):
             self.assertIsNone(T.after_wake_word(text), text)
+
+
+class StopTest(unittest.TestCase):
+    def test_stop_words(self):
+        for text in ("para", "Cállate.", "ya basta", "para por favor"):
+            self.assertTrue(T.is_stop(text), text)
+        for text in ("pausa la música", "¿y mañana?", "", "para mañana a qué hora tengo cita"):
+            self.assertFalse(T.is_stop(text), text)
 
 
 class RemindersTest(unittest.TestCase):

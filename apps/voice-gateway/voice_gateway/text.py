@@ -80,12 +80,16 @@ def is_echo(transcript, spoken):
     return difflib.SequenceMatcher(None, t, s).find_longest_match().size / len(t) >= ECHO_SIMILARITY
 
 
-# ponytail: keyword match; "memoria" can also mean conversation memory. Move to an intent call if it misfires.
+# ponytail: keyword match; move to an intent call if it misfires. A server word alone ("reinicia el
+# servidor", "en el servidor tengo…") must not open the stats panel: it needs a status question too.
 STATS_WORDS = {"servidor", "server", "ram", "memoria", "cpu", "procesador", "disco", "almacenamiento"}
+STATUS_WORDS = {"como", "estado", "status", "estatus", "tal", "cuanto", "cuanta", "uso", "usando", "consume",
+                "consumo", "carga", "salud", "rendimiento", "libre", "queda", "recursos", "temperatura"}
 
 
 def wants_stats(text):
-    return bool(STATS_WORDS & set(_norm(text).split()))
+    words = set(_norm(text).split())
+    return bool(STATS_WORDS & words) and bool(STATUS_WORDS & words)
 
 
 def stats_note(s, user_text):
@@ -164,6 +168,15 @@ def reminders_note(items, user_text, label="Próximos 7 días"):
             f"{listed}. La pantalla ya los muestra. Si el usuario pidió exactamente este periodo, responde con estos "
             f"datos sin llamar herramientas; si pidió otro periodo o fecha, consulta finnip_calendar con ese rango.]"
             f"\n\n{user_text}")
+# "Finnip, para" while it speaks: stop talking, nothing goes to Hermes.
+STOP_WORDS = {"para", "parale", "callate", "calla", "basta", "silencio", "detente", "alto", "stop", "ya", "espera"}
+
+
+def is_stop(text):
+    words = _norm(text).split()
+    return 0 < len(words) <= 3 and words[0] in STOP_WORDS
+
+
 WAKE_WORD = "finip"  # as _sound() writes "Finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
@@ -179,9 +192,17 @@ def _sound(word):
     return re.sub(r"(.)\1+", r"\1", word.replace("ph", "f"))
 
 
-def after_wake_word(text):
+def after_wake_word(text, anywhere=False):
     """The order after "Finnip" when the phrase starts with it ("" if nothing follows), else None.
-    One lead word may come first: "Oye", or a short one the STT adds ("Ah, Finnip", "Y Finnip")."""
+    One lead word may come first: "Oye", or a short one the STT adds ("Ah, Finnip", "Y Finnip").
+    anywhere: also mid-phrase (standby windows over background audio cut the phrase anywhere), with a
+    stricter match so a similar word in a video or song does not wake it."""
+    if anywhere:
+        for m in WAKE_TOKEN.finditer(text):
+            word = _sound(_norm(m.group()).replace(" ", ""))
+            if word in WAKE_VARIANTS or (len(word) >= 5 and difflib.SequenceMatcher(None, word, WAKE_WORD).ratio() >= 0.8):
+                return text[m.end():].lstrip(" ,.;:!").strip()
+        return None
     for i, m in enumerate(WAKE_TOKEN.finditer(text)):
         word = _sound(_norm(m.group()).replace(" ", ""))
         # 0.7 against "finip": "Cinip", "Finit", "Filip" pass; "final", "fino" do not.
