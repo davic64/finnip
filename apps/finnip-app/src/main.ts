@@ -135,15 +135,31 @@ function showMetrics() {
 const PRE_SPEECH_FRAMES = 10; // Silero v5 frames are 32 ms
 const preSpeech: Float32Array[] = [];
 let streaming = false;
+// Standby: "Finnip" opens the phrase, so a long sound (music) is cut into windows the server
+// transcribes once each, instead of one endless phrase.
+const WAKE_WINDOW_MS = 4000;
+let wakeWindow = 0;
 
+function startUtterance() {
+  streaming = true;
+  link.send({ type: "utterance_start", ...(asleep ? { wake: true } : {}) });
+  clearTimeout(wakeWindow);
+  if (asleep)
+    wakeWindow = window.setTimeout(() => {
+      if (!streaming || !asleep) return;
+      finishUtterance();
+      startUtterance(); // still sounding: next window
+    }, WAKE_WINDOW_MS);
+}
 function abortUtterance() {
   if (!streaming) return;
   streaming = false;
+  clearTimeout(wakeWindow);
   link.send({ type: "utterance_abort" });
 }
-
 function finishUtterance() {
   streaming = false;
+  clearTimeout(wakeWindow);
   if (asleep) return link.send({ type: "utterance_end", wake: true }); // the server checks for "Finnip"
   link.send({ type: "utterance_end" });
   t.end = performance.now();
@@ -156,8 +172,7 @@ function finishUtterance() {
 const handlers = {
   onSpeechStart() {
     if (player?.isSpeaking || !link.online) return;
-    streaming = true;
-    link.send({ type: "utterance_start" });
+    startUtterance();
     preSpeech.splice(0).forEach((f) => link.sendFrame(f));
   },
   onMisfire() {
@@ -250,6 +265,9 @@ link.onEvent = (e) => {
       void getPlayer().unlock(); // allowed without a tap while the mic is capturing
       player?.chime();
       setState("listening");
+      break;
+    case "announce": // Finnip speaks first (printer notices): play it even if no reply is expected
+      acceptAudio = true;
       break;
     case "transcript":
       t.transcript = performance.now();

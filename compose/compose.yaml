@@ -7,14 +7,18 @@ services:
       - ../data/hermes:/opt/data
       # Model choice shared with the voice gateway (finnip-models plugin).
       - ../data/models:/opt/finnip-models
+      # Printer intents (finnip-printer plugin), carried out by the voice gateway.
+      - ../data/printer:/opt/finnip-printer
     command: gateway run
     env_file:
         - ../config/hermes-bridge.env
+        - ../config/printer.env
     environment:
       FINNIP_BRIDGE_URL: http://home-bridge:3000
       # API server reachable inside the Compose network only (no published port); voice-gateway uses it.
       API_SERVER_HOST: 0.0.0.0
       MODEL_STATE: /opt/finnip-models/model.json
+      PRINTER_STATE: /opt/finnip-printer/state.json
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -50,11 +54,13 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:5000:80"
-    devices:
-      # Stable name for the printer's USB serial; replugging it needs a container restart.
-      - /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0:/dev/ttyUSB0
+    # The host's /dev (read only) plus USB-serial access (major 188): the printer's port disappears
+    # when Finnip powers it off and comes back on power on, with no container restart.
+    device_cgroup_rules:
+      - "c 188:* rmw"
     volumes:
       - ../data/octoprint:/octoprint
+      - /dev:/dev:ro
   # HTTPS for app.finnip, home.finnip and the tailnet name; replaces `tailscale serve`.
   caddy:
     build:
@@ -88,6 +94,7 @@ services:
     restart: unless-stopped
     env_file:
       - ../config/voice-gateway.env
+      - ../config/printer.env
     environment:
       HERMES_URL: http://hermes:8642
       # The agenda panel reuses the finnip-calendar plugin's CalDAV reader (iCloud credentials in the env file).
@@ -96,6 +103,9 @@ services:
       # shared with Hermes (Telegram) in data/models, readable through group 10000.
       MODELS_PLUGIN: /opt/finnip-models-plugin/__init__.py
       MODEL_STATE: /models/model.json
+      # Printer watcher: says "ya puedes meter el filamento", powers off when cool (finnip-printer).
+      PRINTER_PLUGIN: /opt/finnip-printer-plugin/__init__.py
+      PRINTER_STATE: /printer/state.json
     group_add: ["10000"]
     # Host loopback only: reached through `tailscale serve`, never directly from the LAN.
     ports:
@@ -106,5 +116,7 @@ services:
       - ../apps/finnip-calendar:/opt/finnip-calendar:ro
       - ../apps/finnip-models:/opt/finnip-models-plugin:ro
       - ../data/models:/models
+      - ../apps/finnip-printer:/opt/finnip-printer-plugin:ro
+      - ../data/printer:/printer
     depends_on:
       - hermes
