@@ -193,14 +193,23 @@ class Session:
             await self.send({"type": "error", "message": "No pude entender el audio."})
             await self.send({"type": "done"})  # without it the UI stays in "thinking"
             return
-        if data.get("wake"):  # standby: only a phrase that starts with "Finnip" counts
+        if data.get("wake"):  # standby, or a barge-in while it speaks: only a phrase with "Finnip" counts
+            if data.get("barge_in") and T.is_echo(transcript, self.sentences):
+                await self.send({"type": "transcript", "text": ""})  # its own voice, even saying "Finnip"
+                return
             rest = T.after_wake_word(transcript)
+            if rest is None:  # background audio: "Finnip" may fall in the middle of a window
+                rest = T.after_wake_word(transcript, anywhere=True)
             if rest is None:
                 if transcript:  # to tune the wake word: what the STT wrote when "Finnip" was not found
                     log.warning("no wake word: %r", transcript[:80])
                 await self.send({"type": "transcript", "text": ""})
                 return
             await self.send({"type": "wake"})
+            if data.get("barge_in") and (not rest or T.is_stop(rest)):
+                await self.stop_turn(data)  # "Finnip" / "Finnip, para": it stops talking and listens
+                await self.send({"type": "transcript", "text": ""})
+                return
             if not rest:
                 return
             transcript = rest

@@ -112,6 +112,31 @@ class GatewayTest(unittest.TestCase):
             self.receive_until(ws, "done")
         self.assertEqual(self.hermes.prompts, ["estado de la casa"])
 
+    def test_finnip_para_stops_the_reply_without_asking_hermes(self):
+        self.hermes.replies.append((["Hoy tienes tres reuniones. "], True))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "mi agenda")
+            self.receive_until(ws, "audio")
+            ws.receive_bytes()
+            self.say(ws, "Finnip, para", wake=True, barge_in=True, played_seq=0, played_ms=300)
+            got = self.receive_until(ws, "transcript")
+        self.assertIn({"type": "wake"}, got)
+        self.assertEqual(got[-1], {"type": "transcript", "text": ""})
+        self.assertEqual(self.hermes.closed, 1)  # the reply was cancelled
+        self.assertEqual(self.hermes.prompts, ["mi agenda"])
+
+    def test_own_voice_saying_finnip_does_not_interrupt(self):
+        self.hermes.replies.append((["Soy Finnip, su asistente. "], True))
+        with self.client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "quién eres")
+            self.receive_until(ws, "audio")
+            ws.receive_bytes()
+            self.say(ws, "soy finnip su asistente", wake=True, barge_in=True, played_seq=0, played_ms=500)
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+            ws.send_json({"type": "cancel"})
+            self.receive_until(ws, "done")
+        self.assertEqual(self.hermes.closed, 1)  # only by the test's cancel
+
     def test_barge_in_with_real_speech_starts_a_new_turn(self):
         self.hermes.replies += [(["Hoy tienes tres reuniones. "], True), (["Listo, señor."], False)]
         with self.client.websocket_connect("/ws", headers=USER) as ws:
