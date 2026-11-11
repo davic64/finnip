@@ -198,6 +198,10 @@ class FastPathTest(unittest.TestCase):
             "volumen al 20 por ciento": ("volume", {"volume": 20}),
             "Reproduce Bohemian Rhapsody de Queen en Alexa": ("play", {"query": "Bohemian Rhapsody de Queen"}),
             "pon el volumen al 30": ("volume", {"volume": 30}),
+            "baja el volumen a 3": ("volume", {"volume": 30}),
+            "baja el volumen a tres": ("volume", {"volume": 30}),
+            "volumen al 5 %": ("volume", {"volume": 5}),
+            "volumen al 5 por ciento": ("volume", {"volume": 5}),
             "volumen 45 %": ("volume", {"volume": 45}),
         }
         for message, expected in cases.items():
@@ -292,6 +296,12 @@ class AdminTest(unittest.TestCase):
         _, listed = self.call({"action": "modes"})
         self.assertEqual((read, deleted, listed), ([("GET", "/modes/estudio", None)], [("DELETE", "/modes/cine", None)],
                                                    [("GET", "/modes", None)]))
+
+    def test_step_params_declare_their_fields(self):
+        params = plugin.SCHEMA["parameters"]["properties"]["steps"]["items"]["properties"]["params"]
+        self.assertEqual(params["properties"]["kelvin"]["type"], "integer")
+        self.assertIn("rgb", params["properties"])
+        self.assertIn("brightness", params["properties"])
 
     def test_save_mode_resolves_step_devices(self):
         _, sent = self.call({"action": "save_mode", "name": "lectura", "music": False, "steps": [

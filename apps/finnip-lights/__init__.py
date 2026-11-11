@@ -216,7 +216,8 @@ SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 100,
-                "description": "Para volume en Alexa: volumen en porcentaje",
+                "description": ("Para volume en Alexa: volumen en porcentaje. Un número del 0 al 10 sin "
+                                "'por ciento' es la escala de Alexa: multiplícalo por 10 ('volumen a 3' = 30)"),
             },
             "name": {
                 "type": "string",
@@ -246,6 +247,14 @@ SCHEMA = {
         "required": ["action"],
         "additionalProperties": False,
     },
+}
+
+# A step's params get the same fields as the direct actions. A bare {"type": "object"} reaches strict
+# providers (OpenRouter/DeepSeek) as an object with no properties, so the model could only send {}.
+_PROPS = SCHEMA["parameters"]["properties"]
+_PROPS["steps"]["items"]["properties"]["params"] = {
+    "type": "object",
+    "properties": {field: _PROPS[field] for fields in ACTION_FIELDS.values() for field in fields},
 }
 
 
@@ -329,7 +338,9 @@ VAGUE = {"la", "el", "los", "las", "un", "una", "unos", "unas", "musica", "canci
          "que", "tu", "quieras", "quiera", "sea", "cualquier", "cualquiera", "cosa", "te", "guste", "gustes",
          "elijas", "escojas", "decidas", "de", "mi", "me", "sorprendeme", "bueno", "buena", "buenas", "otra", "otro",
          "a", "gusto", "tuyo", "tuya", "eleccion", "libre"}
-VOLUME = re.compile(r"^(?:pon |sube |baja )?(?:el )?volumen (?:de alexa )?(?:a |al |en )?(\d{1,3})(?: ciento)?$")  # "%" and filler "por" are gone by then
+LEVELS = ["cero", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez"]
+VOLUME = re.compile(r"^(?:pon |sube |baja )?(?:el )?volumen (?:de alexa )?(?:a |al |en )?(\d{1,3}|"
+                    + "|".join(LEVELS) + r")( ciento)?$")  # "%" and filler "por" are gone by then
 
 
 CHOICE = {"quieras", "quiera", "elijas", "elige", "escojas", "escoge", "decidas", "sorprendeme", "gustes"}
@@ -366,8 +377,12 @@ def parse_music_order(message):
     if len(words) == 1 and head in {"continua", "continuar", "sigue", "seguir", "continuala", "siguele"}:
         return "resume_if_paused", None  # "continúa" alone may mean "keep talking": only if music is paused
     volume = VOLUME.match(" ".join(words))
-    if volume and int(volume.group(1)) <= 100:
-        return "volume", {"volume": int(volume.group(1))}
+    if volume:
+        n = LEVELS.index(volume.group(1)) if volume.group(1) in LEVELS else int(volume.group(1))
+        if n <= 10 and not volume.group(2) and "%" not in raw:
+            n *= 10  # "volumen a 3" is Alexa's 0-10 scale, not 3 %
+        if n <= 100:
+            return "volume", {"volume": n}
     if head in PLAY_VERBS and len(words) > 1:
         # Keep the user's own spelling for the search, minus the verb and a trailing "en Alexa".
         query = re.sub(r"\s+en (la )?alexa$", "", raw.split(None, 1)[1], flags=re.IGNORECASE)

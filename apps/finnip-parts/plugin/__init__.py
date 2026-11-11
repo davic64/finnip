@@ -114,7 +114,8 @@ Reglas:
 - Unidades en mm. Sin import, include, use, surface ni archivos externos.
 - Para imprimir en una Creality Ender-3 V3 SE (220 × 220 × 250 mm) con FDM, en PLA o PETG: apoya la cara más
   grande sobre la cama y evita voladizos de más de 45° y puentes largos cuando se pueda.
-- Paredes de al menos 1.6 mm. Usa $fn = 96 o más en curvas.
+- Paredes de 1.6 mm o más, salvo que el pedido pida otro grosor: entonces úsalo, con mínimo 0.8 mm
+  (dos líneas de la boquilla de 0.4). Usa $fn = 96 o más en curvas.
 - Si la pieza debe ajustar con algo, deja 0.5 mm de holgura por lado salvo que el pedido diga otra.
 - Si el objeto es un producto conocido, usa sus medidas oficiales.
 Responde solo con un bloque ```openscad con el código y, después, una línea "Resumen:" con las medidas
@@ -140,7 +141,7 @@ def _design_code(request, current_code=None, error=None, previous=None):
 
 
 def design(slug, params):
-    request = str(params.get("request") or "").strip()
+    request = str(params.get("request") or params.get("description") or "").strip()  # weak models swap them
     if not request:
         raise ValueError("Falta request: lo que el usuario pidió, con medidas y para qué es la pieza")
     try:
@@ -199,7 +200,13 @@ def run(params):
         return parts("GET", "/parts")
     if action == "look":
         return look(params.get("question"))
-    slug = slugify(params.get("name"))
+    name = params.get("name")
+    if not str(name or "").strip() and action != "delete" and (action != "design" or params.get("change")):
+        # "hazla más grande": the part being talked about is the last one touched. Weak models drop
+        # the name and then retry the same call in a loop.
+        recent = parts("GET", "/parts").get("parts") or []
+        name = max(recent, key=lambda p: p["updated"])["slug"] if recent else None
+    slug = slugify(name)
     if action == "design":
         return design(slug, params)
     if action == "delete":
@@ -249,7 +256,9 @@ SCHEMA = {
         "el usuario con todas las medidas, para qué es y con qué debe ajustar (incluye medidas que te dio look); "
         "para cambiar una pieza usa el mismo name y en request solo el cambio (\"5 mm más alta\"). Responde con "
         "summary, size_mm y avisos (solo se guarda la última versión). list lista las piezas; show la muestra en el holograma del escritorio. "
-        "delete borra la pieza completa: confirma el nombre con el usuario y llama con confirmed true. "
+        "delete borra la pieza completa. Antes pregunta solo \"¿Elimino <nombre>?\" (o \"¿Elimino todas las "
+        "piezas?\"), sin explicar ni dar instrucciones; con un sí llama con confirmed true (una vez por pieza) y "
+        "responde solo \"Listo, eliminada\". "
         "slice la rebana con Cura para PLA (por defecto) o PETG y ajustes opcionales de Cura en settings "
         "(por ejemplo {\"infill_sparse_density\": 40, \"support_enable\": true}); devuelve tiempo en segundos, "
         "gramos y avisos. print imprime la última versión rebanada: ANTES di nombre, material, tiempo y gramos, "

@@ -83,6 +83,15 @@ class PluginTest(unittest.TestCase):
         self.assertIn("cube(1);", asked[0]["messages"][1]["content"])
         self.assertIn("5 mm más alta", asked[0]["messages"][1]["content"])
 
+    def test_a_change_without_name_goes_to_the_last_part(self):
+        asked = self.designer("```openscad\ncube([1, 2, 3]);\n```")
+        listed = {"parts": [{"slug": "viejo", "updated": "2026-01-01"}, {"slug": "soporte", "updated": "2026-11-10"}]}
+        result, _ = self.call({"action": "design", "change": True, "description": "paredes más delgadas"},
+                              {("GET", "/parts"): listed, ("GET", "/parts/soporte"): PART,
+                               ("POST", "/parts/soporte/versions"): {"version": 3}})
+        self.assertTrue(result["success"], result)
+        self.assertIn("paredes más delgadas", asked[0]["messages"][1]["content"])
+
     def test_service_errors_reach_the_model(self):
         result, _ = self.call({"action": "slice", "name": "x"}, {("GET", "/parts/x"): 400})
         self.assertEqual(result, {"success": False, "error": "fallo"})
