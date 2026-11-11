@@ -110,6 +110,36 @@ class PartsGatewayTest(unittest.TestCase):
         self.assertIn("npm install", self.hermes.prompts[-1])
         self.assertIn("confirmed true", self.hermes.prompts[-1])
 
+    def test_pointing_at_a_cloud_project_takes_the_capture_on_the_mac(self):
+        from voice_gateway import app as gateway
+
+        sent = {}
+
+        class Runner:
+            status_code = 200
+
+            def json(self):
+                return {"started": "tienda"}
+
+        async def post(self, url, json):
+            sent.update(json)
+            return Runner()
+
+        desktop = self.connect("desktop")
+        body = {"action": "task", "name": "tienda", "request": "hazlo más grande", "where": "cloud", "point": True}
+        result = {}
+        with mock.patch.object(gateway.httpx.AsyncClient, "post", post):
+            thread = threading.Thread(target=lambda: result.update(
+                r=self.client.post("/internal/project", json=body, headers=AUTH)))
+            thread.start()
+            asked = desktop.receive_json()
+            self.assertEqual(asked["action"], "capture")
+            desktop.send_json({"type": "project_result", "id": asked["id"], "result": {"jpeg": "/9j/", "x": 40, "y": 60}})
+            thread.join(10)
+        self.assertEqual(result["r"].json(), {"started": "tienda"})
+        self.assertEqual((sent["image"], sent["x"], sent["y"], sent["request"]), ("/9j/", 40, 60, "hazlo más grande"))
+        self.assertEqual(self.client.post("/internal/project", json={"action": "capture"}, headers=AUTH).status_code, 400)
+
     def photo(self, answer):
         """Asks for a photo while the desktop app answers with `answer` (or never, if None)."""
         desktop = self.connect("desktop")

@@ -5,6 +5,7 @@ The same fixed actions as the Mac app (apps/finnip-desktop/src-tauri/src/project
 the user who logged in to it. Nothing here runs a command the caller wrote: names and repositories are
 checked, and programs get their arguments without a shell interpreting them. A finished task is posted
 to the gateway's /internal/project_done, which has Finnip tell the user."""
+import base64
 import json
 import os
 import re
@@ -39,6 +40,16 @@ SYSTEM = ("Te habla Finnip, el asistente de voz del usuario, con sus órdenes. T
           "en español con un resumen breve (2 o 3 frases, sin código ni rutas largas) de lo que hiciste y de lo que "
           "falte. Este proyecto corre en un servidor Linux; Finnip levanta su vista previa con --port, no fijes puertos.")
 NEEDS_CONFIRMATION = ["Bash(git push:*)", "Bash(git reset --hard:*)", "Bash(sudo:*)", "Bash(npm publish:*)"]
+MAX_CAPTURE = 8 * 1024 * 1024
+
+
+def pointing(file, x, y):
+    """Same note as the Mac app's (projects.rs): what the user points at, before their words."""
+    return (f"[El usuario señala algo en su pantalla con el puntero del mouse mientras habla. Captura de la zona "
+            f"alrededor del puntero: {file} (el puntero está a {x}% desde la izquierda y {y}% desde arriba). Ábrela "
+            f"con Read para ver a qué se refiere con «esto» o «aquí».] ")
+
+
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,59}$")
 REPO_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -118,7 +129,10 @@ class Projects:
         if action == "open":
             return {"path": str(self.path(req.get("name")))}
         if action == "task":
-            return self.task(req.get("name"), req.get("request"), bool(req.get("confirmed")))
+            request = req.get("request")
+            if req.get("image"):  # "haz esto más grande": the Mac's capture around the pointer
+                request = self.save_pointer(req.get("name"), req["image"], req.get("x"), req.get("y")) + str(request or "")
+            return self.task(req.get("name"), request, bool(req.get("confirmed")))
         if action == "run":
             return self.run(req.get("name"))
         if action == "stop":
@@ -152,6 +166,26 @@ class Projects:
                 shutil.rmtree(path, ignore_errors=True)
             raise Refused((out.stderr or "git falló").strip()[:300])
         return {"created": name, "path": str(path), "cloned": bool(repo)}
+
+    def save_pointer(self, name, image, x, y):
+        """The capture in the project's .finnip/ (kept out of git) -> the note for Claude Code."""
+        path = self.path(name)
+        try:
+            jpeg = base64.b64decode(image, validate=True)
+        except (ValueError, TypeError):
+            raise Refused("La captura llegó dañada") from None
+        if not jpeg.startswith(b"\xff\xd8") or len(jpeg) > MAX_CAPTURE:
+            raise Refused("La captura llegó dañada")
+        folder = path / ".finnip"
+        folder.mkdir(exist_ok=True)
+        shot = folder / f"pointer-{int(time.time() * 1000)}.jpg"
+        shot.write_bytes(jpeg)
+        exclude = path / ".git" / "info" / "exclude"
+        if exclude.exists() and ".finnip/" not in exclude.read_text():
+            with exclude.open("a") as f:
+                f.write("\n.finnip/\n")
+        x, y = (max(0, min(100, int(v))) if isinstance(v, (int, float)) else 50 for v in (x, y))
+        return pointing(f".finnip/{shot.name}", x, y)
 
     def task(self, name, request, confirmed=False):
         path = self.path(name)

@@ -68,6 +68,22 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue((root / ".trash" / "tienda" / ".git").exists())
         self.assertEqual(self.projects.handle({"action": "list"})["projects"], [])  # .trash stays hidden
 
+    def test_pointing_saves_the_capture_and_tells_claude_code(self):
+        import base64
+        self.projects.handle({"action": "create", "name": "tienda"})
+        asked = []
+        self.projects.task = lambda name, request, confirmed=False: asked.append(request) or {"started": name}
+        jpeg = base64.b64encode(b"\xff\xd8 una foto").decode()
+        self.projects.handle({"action": "task", "name": "tienda", "request": "hazlo más grande",
+                              "image": jpeg, "x": 40, "y": 999})
+        self.assertIn("a 40% desde la izquierda y 100% desde arriba", asked[0])
+        self.assertTrue(asked[0].endswith("hazlo más grande"))
+        shots = list((Path(self.tmp.name) / "tienda" / ".finnip").glob("pointer-*.jpg"))
+        self.assertEqual(len(shots), 1)
+        self.assertIn(".finnip/", (Path(self.tmp.name) / "tienda" / ".git" / "info" / "exclude").read_text())
+        self.assertRaises(runner.Refused, self.projects.handle,
+                          {"action": "task", "name": "tienda", "request": "x", "image": "no es base64!"})
+
     def test_dev_command_uses_the_preview_port(self):
         path = Path(self.tmp.name)
         (path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))

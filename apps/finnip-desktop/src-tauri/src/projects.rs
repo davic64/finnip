@@ -45,6 +45,25 @@ pub struct Request {
     pub place: String,
     /// A project outside ~/Projects, relative to home ("Documents/clientes/tienda"): open, task, run, stop.
     pub path: String,
+    /// Task: the user points at something on screen ("haz esto más grande").
+    pub point: bool,
+    /// Set by main.rs only (never from the page): the capture around the pointer and where the pointer is.
+    #[serde(skip)]
+    pub shot: Option<Shot>,
+}
+
+/// A capture of the screen around the mouse pointer (JPEG) and the pointer's place in it, in percent.
+pub struct Shot {
+    pub file: PathBuf,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// The note that tells Claude Code what the user points at, before their words.
+pub fn pointing(file: &str, x: u32, y: u32) -> String {
+    format!("[El usuario señala algo en su pantalla con el puntero del mouse mientras habla. Captura de la zona \
+alrededor del puntero: {file} (el puntero está a {x}% desde la izquierda y {y}% desde arriba). Ábrela con Read \
+para ver a qué se refiere con «esto» o «aquí».] ")
 }
 
 /// Called with a finished task: {name, result, pending, error}.
@@ -327,9 +346,22 @@ impl Projects {
 
     fn task(self: &Arc<Self>, req: Request, on_done: OnDone) -> Result<Value, String> {
         let (name, path) = self.resolve(&req)?;
-        let request = req.request.trim().to_string();
+        let mut request = req.request.trim().to_string();
         if request.is_empty() || request.len() > MAX_REQUEST {
             return Err("Falta lo que hay que hacer en el proyecto".into());
+        }
+        if let Some(shot) = &req.shot {
+            // Inside the project (Claude Code's working folder), kept out of git.
+            let dir = path.join(".finnip");
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let name = shot.file.file_name().ok_or("Captura inválida")?;
+            fs::copy(&shot.file, dir.join(name)).map_err(|e| format!("No pude guardar la captura: {e}"))?;
+            let _ = fs::remove_file(&shot.file);
+            let exclude = path.join(".git/info/exclude");
+            if exclude.exists() && !fs::read_to_string(&exclude).unwrap_or_default().contains(".finnip/") {
+                let _ = fs::write(&exclude, fs::read_to_string(&exclude).unwrap_or_default() + "\n.finnip/\n");
+            }
+            request = pointing(&format!(".finnip/{}", name.to_string_lossy()), shot.x, shot.y) + &request;
         }
         if !self.busy.lock().unwrap().insert(name.clone()) {
             return Err(format!("Claude Code ya está trabajando en {name}"));

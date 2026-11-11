@@ -36,7 +36,7 @@ STEP_ACTIONS = {"on", "off", "brightness", "color", "color_temp", "open", "close
 MODE_SLUG = re.compile(r"^[a-z0-9_]{1,40}$")
 ENROLL_TIMEOUT = 120.0
 # Voice projects: actions the Mac app does for Finnip (projects.rs there checks every value again).
-PROJECT_ACTIONS = {"list", "create", "open", "task", "run", "stop", "find", "delete"}
+PROJECT_ACTIONS = {"list", "create", "open", "task", "run", "stop", "find", "delete", "capture"}
 PROJECT_TIMEOUT = 150.0  # s: a clone or a dev server's first build
 # Projects "en la nube": apps/finnip-runner on the host, on a Unix socket shared through group 10000.
 RUNNER_SOCKET = os.environ.get("RUNNER_SOCKET", "/runner/runner.sock")  # s without a usable phrase before "aprende mi voz" gives up
@@ -749,8 +749,17 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         body = await request.json()
         if not isinstance(body, dict) or body.get("action") not in PROJECT_ACTIONS:
             return JSONResponse({"error": "Acción de proyecto inválida"}, status_code=400)
-        fields = {k: body[k] for k in ("action", "name", "repo", "request", "confirmed", "where", "path") if k in body}
+        fields = {k: body[k] for k in ("action", "name", "repo", "request", "confirmed", "where", "path", "point")
+                  if k in body}
+        if body["action"] == "capture":
+            return JSONResponse({"error": "Acción de proyecto inválida"}, status_code=400)  # only asked from here
         if body.get("where") == "cloud" and body["action"] != "open":  # opening is Zed on the Mac, over SSH
+            if body["action"] == "task" and body.get("point"):
+                # "Haz esto más grande" on a cloud project seen in the Mac's browser: the Mac captures it.
+                status, shot = await ask_mac({"action": "capture"})
+                if status != 200:
+                    return JSONResponse(shot, status_code=status)
+                fields.update(image=shot.get("jpeg"), x=shot.get("x"), y=shot.get("y"))
             try:
                 async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=RUNNER_SOCKET),
                                              timeout=PROJECT_TIMEOUT) as http:
@@ -759,21 +768,26 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             except (httpx.HTTPError, ValueError):
                 log.exception("finnip-runner")
                 return JSONResponse({"error": "El servidor de proyectos en la nube no responde"}, status_code=502)
+        status, result = await ask_mac(fields)
+        return JSONResponse(result, status_code=status)
+
+    async def ask_mac(fields):
+        """A project action done by the desktop app -> (HTTP status, its result or {"error"})."""
         targets = desktops()
         if not targets:
-            return JSONResponse({"error": "La app de escritorio no está abierta en la Mac"}, status_code=409)
+            return 409, {"error": "La app de escritorio no está abierta en la Mac"}
         request_id = uuid.uuid4().hex
         projects[request_id] = asyncio.get_running_loop().create_future()
         try:
             await targets[0].send({"type": "project_request", "id": request_id, **fields})
             reply = await asyncio.wait_for(projects[request_id], PROJECT_TIMEOUT)
         except asyncio.TimeoutError:
-            return JSONResponse({"error": "La Mac no respondió a tiempo"}, status_code=504)
+            return 504, {"error": "La Mac no respondió a tiempo"}
         finally:
             projects.pop(request_id, None)
         if reply.get("error"):
-            return JSONResponse({"error": str(reply["error"])[:400]}, status_code=422)
-        return JSONResponse(reply.get("result") or {})
+            return 422, {"error": str(reply["error"])[:400]}
+        return 200, reply.get("result") or {}
 
     async def project_done(data):
         """Claude Code finished on the Mac: Finnip tells the user, on the device they last spoke to."""

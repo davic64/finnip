@@ -66,6 +66,7 @@ def run(params):
             raise ValueError("Falta request: lo que el usuario quiere en el proyecto, con sus palabras")
         body["request"] = request[:4000]
         body["confirmed"] = params.get("confirmed") is True
+        body["point"] = params.get("point") is True
     return call_gateway(body)
 
 
@@ -78,7 +79,7 @@ SCHEMA = {
         "repo ('dueño/nombre'); se abre en Zed. open: abrirlo en Zed. task: pedirle a Claude Code un cambio en el "
         "proyecto; en request van las palabras del usuario completas y el contexto que sepas. Responde 'started': "
         "dile al usuario que ya está en eso y que le avisas al terminar (el resultado te llega solo; no esperes ni "
-        "vuelvas a llamar). Claude Code trabaja solo pero se detiene antes de algo importante (push, borrar, "
+        "vuelvas a llamar). Si dice 'esto', 'aquí' o 'este …' refiriéndose a algo en pantalla, pon point true. Claude Code trabaja solo pero se detiene antes de algo importante (push, borrar, "
         "publicar, pagar): entonces pregúntale al usuario y SOLO con un sí explícito llama task con confirmed true y "
         "request 'Confirmado: ...'. run: correr el proyecto; en la Mac abre el navegador, en la nube queda en "
         "http://<proyecto>.dev.finnip, varios a la vez (devuelve url). stop: detenerlo. Usa el mismo where en todas las acciones de un proyecto. "
@@ -96,6 +97,8 @@ SCHEMA = {
             "request": {"type": "string", "maxLength": 4000, "description": "Para task: lo que hay que hacer, con las palabras del usuario"},
             "confirmed": {"type": "boolean", "description": "Para task o delete: true solo si el usuario dijo que sí explícitamente"},
             "where": {"type": "string", "enum": ["local", "cloud"], "description": "local por defecto"},
+            "point": {"type": "boolean",
+                      "description": "Para task: true cuando el usuario señala algo en pantalla con el mouse ('esto', 'aquí', 'este botón'); la Mac toma una captura alrededor del puntero y Claude Code la ve"},
             "path": {"type": "string", "maxLength": 300,
                      "description": "Carpeta de la Mac relativa al home, dentro de Documents, por ejemplo 'Documents/clientes/tienda'"},
         },

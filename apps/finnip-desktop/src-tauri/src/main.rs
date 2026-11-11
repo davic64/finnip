@@ -351,12 +351,79 @@ fn part_box(state: tauri::State<Finnip>, rect: Option<[f64; 4]>) {
 /// projects.rs checks every name, repository and command; a finished Claude Code task comes back to
 /// the page through its hook, and the page passes it to the server.
 #[tauri::command]
-async fn project(app: AppHandle, request: projects::Request) -> Result<serde_json::Value, String> {
+async fn project(app: AppHandle, mut request: projects::Request) -> Result<serde_json::Value, String> {
+    // "Haz esto más grande": what the user points at, captured here (the page never names a file).
+    if request.action == "capture" || (request.action == "task" && request.point) {
+        let shot = tauri::async_runtime::spawn_blocking({
+            let app = app.clone();
+            move || capture_pointer(&app)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if request.action == "capture" {
+            // For a project in the cloud: the server takes it to the runner.
+            let jpeg = std::fs::read(&shot.file).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(&shot.file);
+            return Ok(serde_json::json!({ "jpeg": base64(&jpeg), "x": shot.x, "y": shot.y }));
+        }
+        request.shot = Some(shot);
+    }
     let projects = app.state::<Arc<projects::Projects>>().inner().clone();
     let handle = app.clone();
     let on_done: projects::OnDone =
         Arc::new(move |done| page(&handle, &format!("window.finnipDesktop?.projectDone({done})")));
     tauri::async_runtime::spawn_blocking(move || projects.handle(request, on_done)).await.map_err(|e| e.to_string())?
+}
+
+/// The screen around the mouse pointer (pointer drawn in), with Finnip's overlay hidden for the moment.
+/// Needs macOS's Screen Recording permission for Finnip (asked the first time).
+fn capture_pointer(app: &AppHandle) -> Result<projects::Shot, String> {
+    const W: f64 = 1400.0; // region in points, clamped to the monitor
+    const H: f64 = 900.0;
+    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let monitor = app
+        .monitor_from_point(cursor.x, cursor.y)
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten())
+        .ok_or("No encontré la pantalla del puntero")?;
+    let scale = monitor.scale_factor();
+    let origin = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    let (cx, cy) = (cursor.x / scale, cursor.y / scale);
+    let (w, h) = (W.min(size.width), H.min(size.height));
+    let x = (cx - w / 2.0).clamp(origin.x, origin.x + size.width - w);
+    let y = (cy - h / 2.0).clamp(origin.y, origin.y + size.height - h);
+    let file = std::env::temp_dir().join(format!(
+        "pointer-{}.jpg",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
+    ));
+    page(app, "window.finnipDesktop?.visible(false)");
+    thread::sleep(Duration::from_millis(250)); // the overlay's fade
+    let status = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-C", "-t", "jpg", "-R", &format!("{x:.0},{y:.0},{w:.0},{h:.0}")])
+        .arg(&file)
+        .status();
+    let shown = app.state::<Finnip>().visible.load(Ordering::SeqCst);
+    page(app, &format!("window.finnipDesktop?.visible({shown})"));
+    if !status.map_err(|e| e.to_string())?.success() || !file.exists() {
+        return Err("No pude tomar la captura: dale permiso de Grabación de pantalla a Finnip".into());
+    }
+    let pct = |v: f64, from: f64, len: f64| (((v - from) / len) * 100.0).round().clamp(0.0, 100.0) as u32;
+    Ok(projects::Shot { file, x: pct(cx, x, w), y: pct(cy, y, h) })
+}
+
+/// Standard base64, for the capture sent to the server.
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i)) as usize & 63] as char } else { '=' });
+        }
+    }
+    out
 }
 
 /// Whether a cursor at (x, y), in the overlay's CSS pixels, is over the part's box.
@@ -541,6 +608,15 @@ mod tests {
         assert!(!over_part(rect, 99.0, 250.0));
         assert!(!over_part(rect, 300.0, 451.0));
         assert!(!over_part(None, 300.0, 250.0)); // no part open
+    }
+
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar\xff"), "Zm9vYmFy/w==");
     }
 
     #[test]

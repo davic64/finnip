@@ -23,7 +23,7 @@ class PluginTest(unittest.TestCase):
         result, sent = self.call({"action": "task", "name": "Tienda", "request": "agrega un login", "where": "cloud"})
         self.assertTrue(result["success"])
         self.assertEqual(sent, [{"action": "task", "where": "cloud", "name": "tienda", "request": "agrega un login",
-                                 "confirmed": False}])
+                                 "confirmed": False, "point": False}])
         _, sent = self.call({"action": "create", "name": "finnip", "repo": "davic64/finnip"})
         self.assertEqual(sent[0]["repo"], "davic64/finnip")
 
