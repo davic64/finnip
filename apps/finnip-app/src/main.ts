@@ -2,12 +2,14 @@ import "./style.css";
 import { Link } from "./link";
 import { Mic } from "./mic";
 import { Player } from "./player";
-import { Holo } from "./holo";
+import { glowColor, Holo } from "./holo";
 import { Hud } from "./hud";
 import { showCard } from "./cards";
 import { showAgenda } from "./agenda";
 import { showNowPlaying } from "./nowplaying";
 import { MusicNotice, sceneFor } from "./desktop";
+import { Hands } from "./hands";
+import { PartView } from "./part";
 import { createIcons, Maximize, MessageSquare, MessagesSquare, Minimize, Settings } from "lucide";
 
 createIcons({ icons: { Maximize, MessageSquare, MessagesSquare, Settings } });
@@ -24,6 +26,14 @@ const hud = new Hud($("hud"));
 // Inside the macOS app: transparent overlay with scenes (desktop.ts) instead of the full-screen UI.
 const desktop = new URLSearchParams(location.search).has("desktop");
 if (desktop) document.documentElement.classList.add("desktop");
+// Inside the Android app (apps/finnip-phone): always listening, and it dims the screen at rest.
+const phone = new URLSearchParams(location.search).has("phone");
+if (phone) document.documentElement.classList.add("phone");
+// The Android app calls this when its battery runs low; the server answers with Finnip's voice.
+Object.assign(window, { finnipBattery: (level: number) => link.send({ type: "battery", level }) });
+// Desktop with listening turned off in the menu bar (?muted=1 at load): the mic stays closed except
+// for one phrase after the shortcut.
+let deaf = desktop && new URLSearchParams(location.search).has("muted");
 let holo: Holo | null = null;
 try {
   holo = new Holo($<HTMLCanvasElement>("holo"), $("orb"), desktop);
@@ -31,9 +41,42 @@ try {
   console.error("sin WebGL", err); // the orb button still works, just without the hologram
 }
 
+// 3D part viewer (desktop only). Its box is the only place where the macOS app takes the mouse: the page
+// reports it through the one command the app allows it (part_box); the gateway learns whether a part is
+// open, so short view orders ("vista de arriba") go to the viewer instead of Hermes.
+type TauriIpc = { invoke: (cmd: string, args: object) => Promise<unknown> };
+const tauri = (window as unknown as { __TAURI_INTERNALS__?: TauriIpc }).__TAURI_INTERNALS__;
+let partView: PartView | null = null;
+// Hand gestures on the open part; the camera runs only while a part is open.
+const hands = desktop
+  ? new Hands(
+      (a) => {
+        if (a.kind === "rotate") partView?.rotateBy(a.dx, a.dy);
+        else if (a.kind === "zoom") partView?.zoomBy(a.factor);
+        else partView?.view(a.kind);
+      },
+      (on, error) => {
+        partView?.setHands(on, error);
+        if (error) console.error("cámara", error);
+      },
+    )
+  : null;
+if (desktop && holo) {
+  try {
+    partView = new PartView($("part"), $("part-hit"), $("part-label"), (open, rect) => {
+      link.send({ type: "part_open", open });
+      void tauri?.invoke("part_box", { rect }).catch(() => {});
+      if (open) void hands?.start();
+      else hands?.stop();
+    });
+  } catch (err) {
+    console.error("sin visor de piezas", err);
+  }
+}
 // Hologram color = the monitors' LED color (sent by the server; remembered while they are off).
 function setTheme(rgb: [number, number, number]) {
   holo?.setColor(rgb);
+  partView?.setColor(glowColor(rgb));
   const [h, s, l] = rgbToHsl(rgb);
   document.documentElement.style.setProperty("--holo", `hsl(${h} ${s}% ${Math.max(l, 45)}%)`);
   try {
@@ -67,7 +110,7 @@ const saveSettings = () => {
 };
 
 const link = new Link();
-const mic = new Mic(!desktop); // desktop: no voice processing, so other audio is not ducked
+const mic = new Mic(!desktop, phone); // desktop: no voice processing, so other audio is not ducked
 let player = null as Player | null;
 let mode = "conversation" as Mode;
 let state = "off" as State;
@@ -83,11 +126,45 @@ const STATUS: Record<State, string> = {
   speaking: "Toca para interrumpir",
 };
 
+// A reply in progress, from the user's transcript to "done": between its sentences (a tool running,
+// such as designing a part) Finnip shows it is working instead of going back to listening.
+let replyOpen = false;
+
 // Conversation mode falls asleep after SLEEP_MS without speech: the mic stays open in standby and
 // only a phrase that starts with "Finnip" (checked by the server) or a tap wakes it up again.
 const SLEEP_MS = 2000;
+// Finnip's reply ended in a question ("¿Qué vamos a hacer hoy?"): it waits ASK_MS for the answer instead,
+// even with music on. No answer: back to standby, waiting for "Finnip".
+const ASK_MS = 8000;
+let asked = false;
+const PANEL_MS = 20000; // desktop: a panel asked from another device hides after this
 let asleep = false;
 let sleepTimer = 0;
+// "Finnip, aprende mi voz": the phrase to read aloud, one at a time (the server says which and when).
+const enrollEl = Object.assign(document.createElement("div"), { className: "enroll", hidden: true });
+document.body.append(enrollEl);
+let enrollTimer = 0;
+function showEnroll(e: { step?: number; total?: number; text?: string; done?: boolean }) {
+  clearTimeout(enrollTimer);
+  enrollEl.hidden = !!e.done;
+  if (e.done) return;
+  enrollEl.replaceChildren(
+    Object.assign(document.createElement("small"), { textContent: `Lee en voz alta · frase ${e.step} de ${e.total}` }),
+    Object.assign(document.createElement("p"), { textContent: e.text ?? "" }),
+  );
+  enrollTimer = window.setTimeout(() => (enrollEl.hidden = true), 120000); // the server gives up then too
+}
+// Android app: the screen dims after DIM_MS at rest and lights up while Finnip is awake.
+const DIM_MS = 10000;
+let dimTimer = 0;
+function dimLater(next: State) {
+  const app = (window as { FinnipPhone?: { dim(on: boolean): void } }).FinnipPhone;
+  if (!app) return;
+  clearTimeout(dimTimer);
+  if (!enrollEl.hidden) app.dim(false); // reading the phrases: keep the screen lit
+  else if (next === "standby" || next === "off") dimTimer = window.setTimeout(() => app.dim(true), DIM_MS);
+  else app.dim(false);
+}
 
 function setState(next: State) {
   state = next;
@@ -95,20 +172,24 @@ function setState(next: State) {
   clearTimeout(sleepTimer);
   if (next === "listening" && mode === "conversation")
     sleepTimer = window.setTimeout(() => {
-      if (state !== "listening" || streaming) return;
+      if (state !== "listening" || streaming || partView?.open) return; // an open part keeps it listening
       asleep = true;
+      asked = false;
       setState("standby");
-    }, SLEEP_MS);
+    }, asked ? ASK_MS : SLEEP_MS);
   if (next === "listening" || next === "off" || next === "standby") hud.hide(1200); // stats live only while Finnip talks
   statusEl.textContent = !link.online ? "Sin conexión con Finnip" : STATUS[next];
   orb.setAttribute("aria-pressed", String(mic.isOpen));
+  dimLater(next);
+  if (deaf && next === "standby" && mic.isOpen) void closeMic().then(() => setState("off")); // the shortcut's phrase is over
 }
 
 // While the Echo plays, every turn ends in standby: the song's lyrics must not talk to Finnip.
 // "Finnip, …" or a tap wakes it up as usual.
 let musicOn = false;
 function restingState(): State {
-  if (mic.isOpen && musicOn && mode === "conversation") asleep = true;
+  if (mic.isOpen && musicOn && mode === "conversation" && !asked) asleep = true;
+  else if (partView?.open) asleep = false; // working on a part: talk to it without "Finnip"
   return !mic.isOpen ? "off" : asleep ? "standby" : "listening";
 }
 
@@ -123,7 +204,7 @@ function getPlayer() {
     };
     player.onIdle = () => {
       mic.setMuted(false);
-      setState(restingState());
+      setState(replyOpen ? "thinking" : restingState());
     };
   }
   return player;
@@ -158,7 +239,7 @@ function startUtterance() {
   clearTimeout(wakeWindow);
   if (guarded)
     wakeWindow = window.setTimeout(() => {
-      if (!streaming || !(asleep || bargeIn)) return;
+      if (!streaming || !guarded) return;
       finishUtterance();
       startUtterance(); // still sounding: next window
       recentFrames.forEach((f) => link.sendFrame(f));
@@ -172,6 +253,7 @@ function abortUtterance() {
 }
 function finishUtterance() {
   streaming = false;
+  asked = false;
   clearTimeout(wakeWindow);
   if (bargeIn) // while it speaks: "Finnip, para" stops it, "Finnip, …" asks something new
     return link.send({ type: "utterance_end", wake: true, barge_in: true, ...(player?.played() ?? { played_seq: 0, played_ms: 0 }) });
@@ -212,11 +294,15 @@ const handlers = {
   },
 };
 
-let opening = false;
+// The mic being opened: a second call waits for the same attempt instead of returning at once (the
+// desktop shortcut used to call talk() -> openMic() -> talk() in a loop that froze the page).
+let opening: Promise<void> | null = null;
 
-async function openMic() {
-  if (opening) return;
-  opening = true;
+function openMic() {
+  return (opening ??= tryOpenMic().finally(() => (opening = null)));
+}
+
+async function tryOpenMic() {
   try {
     statusEl.textContent = "Permite el micrófono…";
     await mic.open(handlers, () => (statusEl.textContent = "Preparando…"));
@@ -229,8 +315,6 @@ async function openMic() {
       err instanceof DOMException && err.name === "NotAllowedError"
         ? "Sin permiso de micrófono: actívalo en el navegador"
         : "No pude abrir el micrófono";
-  } finally {
-    opening = false;
   }
 }
 
@@ -287,17 +371,35 @@ link.onEvent = (e) => {
       player?.chime();
       setState("listening");
       break;
+    case "enroll":
+      showEnroll(e);
+      break;
+    case "project_request": {
+      // Voice projects: the Mac app does it (projects.rs checks every value) and the answer goes back.
+      if (!desktop || !tauri) break;
+      const { id, type: _, ...request } = e;
+      tauri.invoke("project", { request }).then(
+        (result) => link.send({ type: "project_result", id, result }),
+        (error) => link.send({ type: "project_result", id, error: String(error) }),
+      );
+      break;
+    }
+    case "reply_text": // the last sentence decides: a question waits longer for the answer
+      asked = e.text.trim().endsWith("?");
+      break;
     case "announce": // Finnip speaks first (printer notices): play it even if no reply is expected
       acceptAudio = true;
       break;
     case "transcript":
       t.transcript = performance.now();
       showMetrics();
-      if (!e.text) return setState(player?.isSpeaking ? "speaking" : restingState()); // noise: a running reply goes on
+      if (!e.text) return setState(player?.isSpeaking ? "speaking" : replyOpen ? "thinking" : restingState()); // noise: a running reply goes on
       acceptAudio = true;
+      replyOpen = true;
       setState("thinking");
       break;
     case "done":
+      replyOpen = false;
       if (state === "thinking" && !player?.isSpeaking) setState(restingState());
       player?.endOfReply();
       break;
@@ -309,7 +411,8 @@ link.onEvent = (e) => {
       break;
     case "now_playing":
       musicOn = e.active && e.state === "playing";
-      if (!desktop) showNowPlaying(e);
+      if (phone) {} // the Mac already shows it
+      else if (!desktop) showNowPlaying(e);
       else if (musicNotice.shouldShow(e)) {
         showNowPlaying(e); // a new song: shown for a moment, then it fades
         clearTimeout(noticeTimer);
@@ -318,10 +421,32 @@ link.onEvent = (e) => {
       if (musicOn && state === "listening" && !streaming) setState(restingState());
       break;
     case "reminders":
-      if (acceptAudio) showAgenda(e);
+      if (acceptAudio || state === "standby" || state === "off") showAgenda(e); // it hides on its own
       break;
-    case "stats":
-      if (acceptAudio) hud.show(e);
+    case "stats": {
+      const idle = state === "standby" || state === "off"; // asked from another device (the phone)
+      if (acceptAudio || idle) hud.show(e);
+      if (desktop && idle) hud.hide(PANEL_MS);
+      break;
+    }
+    case "part":
+      void partView?.show(e).then(() => {
+        if (state === "standby" || state === "listening") setState(restingState()); // listening now
+      }).catch((err) => console.error("pieza", err));
+      break;
+    case "part_view":
+      partView?.view(e.view);
+      break;
+    case "photo_request": // finnip_parts look: one camera frame, only because the user asked
+      if (!hands) break;
+      void hands.snapshot().then(
+        (jpeg) => {
+          link.send({ type: "photo", id: e.id, jpeg });
+          document.body.classList.add("photo-taken");
+          setTimeout(() => document.body.classList.remove("photo-taken"), 900);
+        },
+        (err) => link.send({ type: "photo", id: e.id, error: `Cámara: ${err instanceof Error ? err.message : err}` }),
+      );
       break;
     case "error":
       statusEl.textContent = e.message;
@@ -361,9 +486,11 @@ const levels = new Uint8Array(128);
     level = speechLevel;
   }
   if (desktop) {
-    const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"));
+    const scene = sceneFor(state, hud.on || document.body.classList.contains("agenda-on"), partView?.open);
     if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene;
-    if (holo) holo.paused = scene === "hidden" && !holoFading(); // no drawing while nothing is shown
+    // No drawing while nothing is shown; with a part open it stays small in its corner.
+    if (holo) holo.paused = scene === "hidden" && !holoFading();
+    if (partView) partView.busy = state === "thinking"; // the part pulses while Finnip works on it
   }
   if (holo) {
     holo.state = state === "standby" ? "off" : state;
@@ -409,7 +536,14 @@ setTimeout(Mic.preload, 1500);
 if (desktop) {
   const talk = () => {
     void getPlayer().unlock();
-    if (!mic.isOpen) return void openMic().then(talk);
+    if (!mic.isOpen) {
+      asleep = false; // the next phrase is for Finnip (with listening off: only that one)
+      return void openMic().then(() => {
+        if (!mic.isOpen) return;
+        player?.chime();
+        setState("listening");
+      });
+    }
     if (state === "speaking" || state === "thinking") return interrupt(); // the shortcut silences it
     if (state === "listening" && !asleep) {
       asleep = true; // pressed again while listening: back to standby
@@ -420,23 +554,30 @@ if (desktop) {
     setState("listening");
   };
   const mute = (on: boolean) => {
+    deaf = on;
+    const url = new URL(location.href); // a reload keeps it
+    if (on) url.searchParams.set("muted", "1");
+    else url.searchParams.delete("muted");
+    history.replaceState(null, "", url);
     if (on) return void closeMic().then(() => setState("off"));
     asleep = true;
     void openMic();
   };
   const visible = (on: boolean) => document.documentElement.classList.toggle("desktop-off", !on);
-  Object.assign(window, { finnipDesktop: { talk, mute, visible } });
+  // A Claude Code task finished on the Mac (the app calls this): the server has Finnip tell the user.
+  const projectDone = (done: Record<string, unknown>) => link.send({ type: "project_done", ...done });
+  Object.assign(window, { finnipDesktop: { talk, mute, visible, projectDone } });
   asleep = true;
-  void openMic();
+  if (!deaf) void openMic();
 }
 // Mic already allowed: open straight into standby, waiting for "Finnip". Otherwise the first tap
 // asks for permission (browsers only show that prompt after a gesture).
 if (!desktop) void (async () => {
   try {
     const perm = await navigator.permissions.query({ name: "microphone" as PermissionName });
-    if (perm.state !== "granted" || mode !== "conversation") return;
+    if ((perm.state !== "granted" && !phone) || mode !== "conversation") return;
   } catch {
-    return; // no Permissions API for the mic (older Safari): wait for the tap
+    if (!phone) return; // no Permissions API for the mic (older Safari): wait for the tap
   }
   asleep = true;
   await openMic();

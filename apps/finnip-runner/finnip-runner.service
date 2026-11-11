@@ -1,0 +1,16 @@
+# Projects in the cloud (apps/finnip-runner): Claude Code and dev servers as the user logged in to Claude Code.
+# Install: sudo cp apps/finnip-runner/finnip-runner.service /etc/systemd/system/ && sudo systemctl enable --now finnip-runner
+[Unit]
+Description=Finnip projects in the cloud (Claude Code runner)
+After=network.target docker.service
+
+[Service]
+User=finnip
+# The socket lives in data/runner (finnip:10000, mode 750): only the voice gateway (group 10000) gets in.
+EnvironmentFile=/srv/finnip/config/parts.env
+ExecStart=/usr/bin/python3 /srv/finnip/apps/finnip-runner/runner.py
+Restart=on-failure
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

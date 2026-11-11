@@ -6,6 +6,8 @@ import re
 
 import httpx
 
+from . import text as T
+
 
 class ParakeetStt:
     """NVIDIA Parakeet TDT v3 (multilingual, int8 ONNX on CPU). Measured on the server with the user's
@@ -58,6 +60,10 @@ class HermesClient:
                 event = json.loads(line[5:])
                 if event.get("type") == "response.output_text.delta":
                     yield event.get("delta", "")
+                elif event.get("type") == "response.output_item.added" and event.get("item", {}).get("type") == "function_call":
+                    item = event["item"]
+                    if notice := T.tool_notice(item.get("name"), item.get("arguments")):
+                        yield f"\n{notice}\n"  # its own sentence, spoken while the tool runs
                 elif event.get("type") == "response.failed":
                     raise RuntimeError("Hermes no pudo completar la respuesta")
 
@@ -88,6 +94,18 @@ class ModelRouter:
     async def apply(self, order):
         """(what to tell the user, (provider, model) or None)."""
         return await asyncio.to_thread(self.plugin.apply_order, order, self.state_path)
+class Routines:
+    """The panel's routines, through the finnip-lights plugin (mounted read only): found and run here,
+    so Finnip says the routine's reply word for word without asking the model."""
+    def __init__(self, path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_lights", path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+    async def find(self, text):
+        return await asyncio.to_thread(self.plugin.routine, text)
+    async def run(self, item):
+        return await asyncio.to_thread(self.plugin.run_routine, item)
 class Printer:
     """Watcher side of the finnip-printer Hermes plugin (mounted read only): step() carries out what
     waits for a temperature or for the print, and returns what Finnip has to say on its own."""
@@ -104,6 +122,23 @@ async def telegram(text):
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text})
         resp.raise_for_status()
+class PartsClient:
+    """STL files from the finnip-parts service, for the hologram (the browser cannot hold its key)."""
+
+    def __init__(self):
+        self.url = os.environ.get("PARTS_URL", "http://parts:3100").rstrip("/")
+        self.key = os.environ["PARTS_API_KEY"]
+        self.http = httpx.AsyncClient(timeout=30)
+
+    async def stl(self, slug, version):
+        response = await self.http.get(f"{self.url}/parts/{slug}/v{int(version)}.stl",
+                                       headers={"Authorization": f"Bearer {self.key}"})
+        if response.status_code == 404:
+            raise LookupError(f"{slug} v{version}")
+        response.raise_for_status()
+        return response.content
+
+
 class EdgeTts:
     def __init__(self):
         self.voice = os.environ.get("TTS_VOICE", "es-MX-JorgeNeural")
@@ -111,11 +146,17 @@ class EdgeTts:
     async def synthesize(self, text):
         import edge_tts
         text = re.sub(r"\bfinnip\b", "Fínnip", text, flags=re.IGNORECASE)  # stress on the first i
-        audio = bytearray()
-        async for chunk in edge_tts.Communicate(text, self.voice).stream():
-            if chunk["type"] == "audio":
-                audio += chunk["data"]
-        return bytes(audio)
+        for attempt in range(3):  # Edge sometimes answers with no audio at all (NoAudioReceived): try again
+            try:
+                audio = bytearray()
+                async for chunk in edge_tts.Communicate(text, self.voice).stream():
+                    if chunk["type"] == "audio":
+                        audio += chunk["data"]
+                return bytes(audio)
+            except edge_tts.exceptions.NoAudioReceived:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.3)
 
 
 def host_stats(disk_path="/"):

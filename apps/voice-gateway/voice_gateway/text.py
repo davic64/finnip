@@ -1,5 +1,6 @@
 """Pure text helpers: sentence splitting, what the user heard, echo detection."""
 import difflib
+import json
 import re
 import unicodedata
 from datetime import date, datetime, time, timedelta
@@ -78,6 +79,12 @@ def is_echo(transcript, spoken):
     if t in s:
         return True
     return difflib.SequenceMatcher(None, t, s).find_longest_match().size / len(t) >= ECHO_SIMILARITY
+
+
+def unspoken_words(transcript, spoken):
+    """The transcript's words that Finnip did not just say, in order: the user's part of a barge-in."""
+    said = set(_norm(" ".join(spoken)).split())
+    return " ".join(w for w in _norm(transcript).split() if w not in said)
 
 
 # ponytail: keyword match; move to an intent call if it misfires. A server word alone ("reinicia el
@@ -168,7 +175,51 @@ def reminders_note(items, user_text, label="Próximos 7 días"):
             f"{listed}. La pantalla ya los muestra. Si el usuario pidió exactamente este periodo, responde con estos "
             f"datos sin llamar herramientas; si pidió otro periodo o fecha, consulta finnip_calendar con ese rango.]"
             f"\n\n{user_text}")
-# "Finnip, para" while it speaks: stop talking, nothing goes to Hermes.
+# A 3D part open as a hologram on the desktop: these short orders move it in the app, without Hermes.
+PART_VIEWS = [
+    ("close", r"(cierrala|ocultala)|(cierra|quita|oculta) (la pieza|el holograma)"),
+    ("top", r"(vista )?(de |desde )?(arriba|superior|planta)"),
+    ("bottom", r"(vista )?(de |desde )?(abajo|inferior)"),
+    ("front", r"(vista )?(de |desde el )?(frente|frontal)"),
+    ("back", r"(vista )?(de |desde )?(atras|trasera)"),
+    ("side", r"(vista )?(de |desde el |desde un )?(lado|lateral|costado)"),
+    ("reset", r"(vista )?(inicial|normal|original)|restablece( la vista)?|como estaba"),
+    ("spin", r"(girala|rotala|gira|rota|dale vueltas|dale la vuelta)( la pieza)?"),
+    ("still", r"(deja de girar(la)?|detenla|quieta|ya no la gires)"),
+    ("closer", r"(mas cerca|acercala|acercate|zoom)"),
+    ("farther", r"(mas lejos|alejala|alejate)"),
+]
+_PART_VIEWS = [(view, re.compile(rf"^(?:(?:pon|ponla|ponme|muestrala|ensenala) (?:la )?)?(?:{pattern})$"))
+               for view, pattern in PART_VIEWS]
+PART_FILLER = {"finnip", "porfa", "por", "favor"}
+
+
+def part_view(text):
+    """'Vista de arriba.' -> 'top'; anything longer or different -> None (it goes to Hermes)."""
+    words = [w for w in _norm(text).split() if w not in PART_FILLER]
+    if not words or len(words) > 6:
+        return None
+    phrase = " ".join(words)
+    return next((view for view, pattern in _PART_VIEWS if pattern.match(phrase)), None)
+
+
+def tool_notice(name, arguments):
+    """What Finnip says the moment Hermes calls a slow tool (designing takes about a minute), or None."""
+    if name != "finnip_parts":
+        return None
+    try:
+        args = json.loads(arguments or "{}")
+    except ValueError:
+        args = {}
+    action = args.get("action")
+    if action == "design":
+        return "Va, déjame corregirla." if args.get("change") else "Estoy diseñando la pieza."
+    if action == "look":
+        return "Déjame ver."
+    return None
+
+
+# "Finnip, para" while it speaks: stop talking, nothing goes to Hermes. A stop word alone works too.
 STOP_WORDS = {"para", "parale", "callate", "calla", "basta", "silencio", "detente", "alto", "stop", "ya", "espera"}
 
 
@@ -180,7 +231,8 @@ def is_stop(text):
 WAKE_WORD = "finip"  # as _sound() writes "Finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
-WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini"}  # after _sound()
+# 2026-11-10, from the phone across the room: "Fine.", "Fanny." ("fany").
+WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini", "fine", "fany", "fani"}  # after _sound()
 WAKE_TOKEN = re.compile(r"[^\s,.;:¿?¡!]+")
 
 
@@ -211,3 +263,18 @@ def after_wake_word(text, anywhere=False):
         if i >= 1 or (word not in WAKE_LEADS and len(word) > 3):
             return None
     return None
+
+
+ENROLL = re.compile(r"\b(aprende|aprender|registra|graba|reconoce|reconocer)( a reconocer)? (mi|a mi) voz\b")
+CANCEL_WORDS = {"cancela", "cancelar", "cancelalo", "olvidalo", "detente"}
+
+
+def wants_enroll(text):
+    """ "Aprende mi voz", "aprende a reconocer mi voz", "registra mi voz"."""
+    return bool(ENROLL.search(_norm(text)))
+
+
+def is_cancel(text):
+    words = _norm(text).split()
+    return 0 < len(words) <= 3 and words[0] in CANCEL_WORDS
+

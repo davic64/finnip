@@ -216,7 +216,8 @@ SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 100,
-                "description": "Para volume en Alexa: volumen en porcentaje",
+                "description": ("Para volume en Alexa: volumen en porcentaje. Un número del 0 al 10 sin "
+                                "'por ciento' es la escala de Alexa: multiplícalo por 10 ('volumen a 3' = 30)"),
             },
             "name": {
                 "type": "string",
@@ -246,6 +247,14 @@ SCHEMA = {
         "required": ["action"],
         "additionalProperties": False,
     },
+}
+
+# A step's params get the same fields as the direct actions. A bare {"type": "object"} reaches strict
+# providers (OpenRouter/DeepSeek) as an object with no properties, so the model could only send {}.
+_PROPS = SCHEMA["parameters"]["properties"]
+_PROPS["steps"]["items"]["properties"]["params"] = {
+    "type": "object",
+    "properties": {field: _PROPS[field] for fields in ACTION_FIELDS.values() for field in fields},
 }
 
 
@@ -329,7 +338,9 @@ VAGUE = {"la", "el", "los", "las", "un", "una", "unos", "unas", "musica", "canci
          "que", "tu", "quieras", "quiera", "sea", "cualquier", "cualquiera", "cosa", "te", "guste", "gustes",
          "elijas", "escojas", "decidas", "de", "mi", "me", "sorprendeme", "bueno", "buena", "buenas", "otra", "otro",
          "a", "gusto", "tuyo", "tuya", "eleccion", "libre"}
-VOLUME = re.compile(r"^(?:pon |sube |baja )?(?:el )?volumen (?:de alexa )?(?:a |al |en )?(\d{1,3})(?: ciento)?$")  # "%" and filler "por" are gone by then
+LEVELS = ["cero", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez"]
+VOLUME = re.compile(r"^(?:pon |sube |baja )?(?:el )?volumen (?:de alexa )?(?:a |al |en )?(\d{1,3}|"
+                    + "|".join(LEVELS) + r")( ciento)?$")  # "%" and filler "por" are gone by then
 
 
 CHOICE = {"quieras", "quiera", "elijas", "elige", "escojas", "escoge", "decidas", "sorprendeme", "gustes"}
@@ -343,6 +354,77 @@ def leaves_choice(query):
     if set(words) <= VAGUE or CHOICE & set(words):
         return True
     return words[0] in GENERIC and (len(words) == 1 or words[1] != "de")
+
+
+# The user's routines ("cuando diga X, responde Y y haz Z"), edited in the panel (/panel.html) and stored
+# by the voice gateway. Read on every phrase, so a change applies at once.
+ROUTINES_FILE = os.environ.get("FINNIP_ROUTINES", "/opt/finnip-routines/routines.json")
+ROUTINE_MATCH = 0.85  # "Despier, ya llegó papá" still matches "despierta, ya llegó papá"
+
+
+def load_routines():
+    try:
+        with open(ROUTINES_FILE) as f:
+            routines = json.load(f).get("routines", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [r for r in routines if isinstance(r, dict) and str(r.get("phrase") or "").strip()]
+
+
+def _words(text):
+    return re.sub(r"[^\w ]", " ", normalize(text)).split()
+
+
+def routine(message, routines=None):
+    """The routine whose phrase is said in the message (tolerant to how the STT spells it), or None."""
+    words = _words(message)
+    for item in load_routines() if routines is None else routines:
+        phrase = " ".join(_words(item["phrase"]))
+        n = len(phrase.split())
+        for i in range(max(1, len(words) - n + 1)):
+            if difflib.SequenceMatcher(None, " ".join(words[i:i + n]), phrase).ratio() >= ROUTINE_MATCH:
+                return item
+    return None
+
+
+def run_routine(item):
+    """Does the routine's mode, actions and music -> (its exact reply, what failed). The voice gateway
+    calls it directly (no model at all); Hermes (Telegram) through routine_fast_path."""
+    failed = []
+    try:
+        devices = call_bridge("GET", "/devices").get("devices", [])
+        if item.get("mode"):
+            scripts = {normalize(d.get("name", "")): d for d in devices if d.get("domain") == "script"}
+            name = difflib.get_close_matches(normalize(item["mode"]), list(scripts), n=1, cutoff=0.8)
+            if name:
+                call_bridge("POST", f"/devices/{scripts[name[0]]['id']}/run")
+            else:
+                failed.append(f"no existe el modo {item['mode']}")
+        for step in item.get("steps") or []:  # lights, colors, volume: Home Bridge checks each one
+            try:
+                call_bridge("POST", f"/devices/{step['device']}/{step['action']}", step.get("params") or None)
+            except Exception as error:
+                failed.append(f"{step.get('device')}: {error}")
+        if item.get("music"):
+            speakers = [d for d in devices if d.get("domain") == "media_player"]
+            if speakers:
+                call_bridge("POST", f"/devices/{speakers[0]['id']}/play", {"query": item["music"]})
+            else:
+                failed.append("no hay bocina")
+    except Exception as error:
+        failed.append(str(error))
+    return str(item.get("reply") or "").strip() or "Listo, señor.", failed
+
+
+def routine_fast_path(user_message):
+    """Runs the routine before the model's turn; the model only says its reply."""
+    item = routine(user_message)
+    if item is None:
+        return None
+    reply, failed = run_routine(item)
+    note = f" Después, en una frase corta, dile que falló: {'; '.join(failed)}." if failed else ""
+    return {"context": (f"[finnip fast path] La rutina del usuario «{item['phrase']}» YA se ejecutó. Responde exactamente "
+                        f"y solo esto, sin agregar nada ni llamar herramientas: «{reply}».{note}")}
 
 
 def parse_music_order(message):
@@ -366,8 +448,12 @@ def parse_music_order(message):
     if len(words) == 1 and head in {"continua", "continuar", "sigue", "seguir", "continuala", "siguele"}:
         return "resume_if_paused", None  # "continúa" alone may mean "keep talking": only if music is paused
     volume = VOLUME.match(" ".join(words))
-    if volume and int(volume.group(1)) <= 100:
-        return "volume", {"volume": int(volume.group(1))}
+    if volume:
+        n = LEVELS.index(volume.group(1)) if volume.group(1) in LEVELS else int(volume.group(1))
+        if n <= 10 and not volume.group(2) and "%" not in raw:
+            n *= 10  # "volumen a 3" is Alexa's 0-10 scale, not 3 %
+        if n <= 100:
+            return "volume", {"volume": n}
     if head in PLAY_VERBS and len(words) > 1:
         # Keep the user's own spelling for the search, minus the verb and a trailing "en Alexa".
         query = re.sub(r"\s+en (la )?alexa$", "", raw.split(None, 1)[1], flags=re.IGNORECASE)
@@ -452,15 +538,21 @@ def music_fast_path(user_message):
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté '{action}' en Alexa antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
+    # Alexa takes a few seconds to change songs: the title in the reply may still be the previous one.
+    heard = (f"Pedí '{body['query']}'. NO digas qué canción suena (el título de la respuesta puede ser el de "
+             "antes): confirma solo lo que pusiste. " if action == "play" else "")
     return {"context": (
         f"[finnip fast path] Esta orden de música YA se ejecutó en Alexa antes de tu turno: {action}. "
-        f"Respuesta de Home Bridge: {json.dumps(result, ensure_ascii=False)}. "
+        f"Respuesta de Home Bridge: {json.dumps(result, ensure_ascii=False)}. {heard}"
         "No vuelvas a llamar herramientas ni a verificar; confirma al usuario en una frase corta.")}
 
 
 def fast_path_hook(user_message=None, **kwargs):
     if not isinstance(user_message, str) or "\n" in user_message.strip():
         return None
+    done = routine_fast_path(user_message)
+    if done is not None:
+        return done
     mode = mode_fast_path(user_message)
     if mode is not None:
         return mode

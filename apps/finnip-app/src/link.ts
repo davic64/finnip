@@ -10,6 +10,8 @@ export type ServerEvent =
   | { type: "resume" }
   | { type: "wake" }
   | { type: "announce"; text: string }
+  | { type: "enroll"; step?: number; total?: number; text?: string; done?: boolean }
+  | { type: "project_request"; id: string; action: string; name?: string; repo?: string; request?: string; allow?: string[] }
   | { type: "theme"; rgb: [number, number, number] }
   | {
       type: "now_playing"; active: boolean; state: string; title: string | null; artist: string | null;
@@ -19,6 +21,9 @@ export type ServerEvent =
   | { type: "device"; id: string; name: string; on: boolean; brightness: number | null; rgb: [number, number, number] | null }
   | ({ type: "stats" } & Stats)
   | { type: "reminders"; title: string; items: { name: string; when: string; date: string; day: string; time: string }[] }
+  | { type: "part"; slug: string; version: number; name: string; size_mm: number[] | null; url: string }
+  | { type: "part_view"; view: string }
+  | { type: "photo_request"; id: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -37,7 +42,9 @@ export class Link {
     ws.onopen = () => {
       this.retry = 500;
       this.onStatus(true);
-      ws.send(JSON.stringify({ type: "hello", client: "pwa", version: 1 }));
+      // "desktop": the macOS overlay, which shows 3D parts and has the camera (the gateway sends it those).
+      const client = new URLSearchParams(location.search).has("desktop") ? "desktop" : "pwa";
+      ws.send(JSON.stringify({ type: "hello", client, version: 1 }));
     };
     ws.onmessage = (msg) => {
       if (msg.data instanceof ArrayBuffer) {

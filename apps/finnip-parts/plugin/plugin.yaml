@@ -1,0 +1,3 @@
+name: finnip-parts
+version: "0.1.0"
+description: Diseña piezas 3D en OpenSCAD, las muestra en el holograma, las rebana con Cura (PLA o PETG) y las imprime en OctoPrint

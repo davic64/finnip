@@ -16,6 +16,7 @@ class FakePrinter:
     def __init__(self, nozzle=25, bed=25, job="Operational", connected=True, printing=False):
         self.nozzle, self.bed, self.job, self.connected, self.printing = nozzle, bed, job, connected, printing
         self.sent, self.connection, self.power = [], [], []
+        self.port = True  # the USB port shows up while the printer has power
 
     def read(self):
         printer = None
@@ -27,6 +28,10 @@ class FakePrinter:
                          "progress": {"completion": 42.0, "printTimeLeft": 4500}}
 
     def octoprint(self, method, path, body=None):
+        if path == "/api/connection" and method == "GET":
+            port = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+            return {"current": {"state": "Operational" if self.connected else "Closed"},
+                    "options": {"portPreference": port, "ports": [port] if self.port else []}}
         if path == "/api/connection":
             self.connection.append(body["command"])
         return {}
@@ -46,7 +51,7 @@ class PrinterTest(unittest.TestCase):
         for patch in self.fake.patches() + [mock.patch.object(plugin, "STATE_PATH", self.path)]:
             patch.start()
             self.addCleanup(patch.stop)
-        plugin._last["job"] = None
+        plugin._last.update(job=None, tried=float("-inf"))
 
     def tearDown(self):
         self.dir.cleanup()
@@ -108,6 +113,18 @@ class PrinterTest(unittest.TestCase):
         self.assertEqual(self.fake.connection, ["connect"])
         self.fake.connected = True
         self.assertIn("conectada", plugin.step(now=20)[0])
+
+    def test_connects_on_its_own_when_turned_on_another_way(self):
+        self.fake.connected, self.fake.port = False, False   # off: no port, nothing to try
+        self.assertEqual(plugin.step(now=0), [])
+        self.assertEqual(self.fake.connection, [])
+        self.fake.port = True                                # turned on by hand, or the USB came back
+        self.assertEqual(plugin.step(now=20), [])
+        self.assertEqual(self.fake.connection, ["connect"])
+        plugin.step(now=25)                                  # not again before RETRY_CONNECT
+        self.assertEqual(self.fake.connection, ["connect"])
+        plugin.step(now=40)                                  # the handshake failed: try again
+        self.assertEqual(self.fake.connection, ["connect", "connect"])
 
     def test_heater_that_never_heats_gives_up(self):
         plugin.run({"action": "preheat"}, now=0)

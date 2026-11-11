@@ -9,10 +9,13 @@ services:
       - ../data/models:/opt/finnip-models
       # Printer intents (finnip-printer plugin), carried out by the voice gateway.
       - ../data/printer:/opt/finnip-printer
+      # Routines from the panel, written by the voice gateway (finnip-lights reads them on every phrase).
+      - ../data/routines:/opt/finnip-routines:ro
     command: gateway run
     env_file:
         - ../config/hermes-bridge.env
         - ../config/printer.env
+        - ../config/parts.env
     environment:
       FINNIP_BRIDGE_URL: http://home-bridge:3000
       # API server reachable inside the Compose network only (no published port); voice-gateway uses it.
@@ -47,6 +50,27 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # 3D parts (apps/finnip-parts): OpenSCAD -> STL and CuraEngine slicing. Compose network only, no
+  # published port; runs model-written code, so read-only, no capabilities and capped memory.
+  parts:
+    build:
+      context: ../apps/finnip-parts
+    container_name: finnip-parts
+    restart: unless-stopped
+    env_file:
+      - ../config/parts.env
+    environment:
+      HOME: /tmp
+    volumes:
+      - ../data/parts:/data/parts
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 128
   # 3D printer (USB serial, CH340). Web UI at http://print.finnip through Caddy.
   octoprint:
     image: octoprint/octoprint:latest
@@ -95,6 +119,7 @@ services:
     env_file:
       - ../config/voice-gateway.env
       - ../config/printer.env
+      - ../config/parts.env
     environment:
       HERMES_URL: http://hermes:8642
       # The agenda panel reuses the finnip-calendar plugin's CalDAV reader (iCloud credentials in the env file).
@@ -106,6 +131,14 @@ services:
       # Printer watcher: says "ya puedes meter el filamento", powers off when cool (finnip-printer).
       PRINTER_PLUGIN: /opt/finnip-printer-plugin/__init__.py
       PRINTER_STATE: /printer/state.json
+      # "Aprende mi voz": the user's voiceprint; phrases in another voice (Alexa, the TV) are ignored.
+      VOICEPRINT: /voice/voiceprint.json
+      # The panel (/panel.html) writes the user's routines here; Hermes reads them (finnip-lights).
+      ROUTINES_FILE: /routines/routines.json
+      # Routines run here, word-for-word reply without the model (finnip-lights plugin, read only).
+      ROUTINES_PLUGIN: /opt/finnip-lights/__init__.py
+      FINNIP_ROUTINES: /routines/routines.json
+      RUNNER_SOCKET: /runner/runner.sock
     group_add: ["10000"]
     # Host loopback only: reached through `tailscale serve`, never directly from the LAN.
     ports:
@@ -118,5 +151,10 @@ services:
       - ../data/models:/models
       - ../apps/finnip-printer:/opt/finnip-printer-plugin:ro
       - ../data/printer:/printer
+      - ../data/voice:/voice
+      - ../data/routines:/routines
+      - ../apps/finnip-lights:/opt/finnip-lights:ro
+      # Projects in the cloud: apps/finnip-runner's socket (group 10000).
+      - ../data/runner:/runner
     depends_on:
       - hermes

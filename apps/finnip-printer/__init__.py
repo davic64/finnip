@@ -23,6 +23,7 @@ MIN_EXTRUDE = 180      # °C: Marlin refuses to extrude colder than ~170 (cold e
 KEEP_HOT = 20 * 60     # s: a nozzle left hot (cleaning, loading) cools down after this
 HEAT_TIMEOUT = 10 * 60  # s: a heater that has not reached its target by then gives up
 CONNECT_TIMEOUT = 2 * 60
+RETRY_CONNECT = 15     # s between connection attempts while the printer's USB port is there
 PURGE = ["M83", "G1 E50 F150"]                       # 50 mm slowly: old color out, new one flowing
 UNLOAD = ["M83", "G1 E10 F300", "G1 E-100 F1800"]    # soften the tip, then pull back past the gears
 COOL = ["M104 S0", "M140 S0", "M84"]                 # heaters and steppers off
@@ -183,7 +184,22 @@ def run(params, now=None):
 
 # --- the watcher (voice gateway) -------------------------------------------------------------------
 
-_last = {"job": None}  # job state seen by the previous step (one gateway process)
+_last = {"job": None, "tried": float("-inf")}  # previous step's job state, last connect attempt
+
+
+def autoconnect(now):
+    """OctoPrint not connected but the printer's port is there (turned on by hand or from Home Assistant,
+    or the USB dropped for a moment): connect. Off, the port is gone, so nothing is tried."""
+    if now - _last["tried"] < RETRY_CONNECT:
+        return
+    _last["tried"] = now
+    try:
+        connection = octoprint("GET", "/api/connection")
+        state, options = connection["current"]["state"], connection["options"]
+        if state.startswith(("Closed", "Offline", "Error")) and options.get("portPreference") in options["ports"]:
+            octoprint("POST", "/api/connection", {"command": "connect"})
+    except Exception:
+        pass
 
 
 def power_off_now():
@@ -223,19 +239,14 @@ def step(now=None, path=None):
         elif prev == "Cancelling":
             said.append(f"Se canceló la impresión de {name}.")
 
+    if printer is None:
+        autoconnect(now)
     do = intent.get("do")
     if do == "connect":
         if printer is not None:
             finish("La impresora ya está encendida y conectada.")
         elif now - intent["since"] > CONNECT_TIMEOUT:
             finish("Encendí la impresora pero OctoPrint no logró conectarse. Revisa el cable USB.")
-        elif now - intent.get("tried", 0) > 10:
-            intent["tried"] = now
-            try:
-                octoprint("POST", "/api/connection", {"command": "connect"})
-            except Exception:
-                pass
-            finish(None, intent)
         return said
     if not do or printer is None or busy(printer):
         if do and printer is None and do != "connect":
@@ -283,7 +294,8 @@ SCHEMA = {
     "name": "finnip_printer",
     "description": (
         "Controla la impresora 3D del usuario (Creality Ender-3 V3 SE en OctoPrint). "
-        "status: estado, temperaturas y, si imprime, avance y tiempo restante. "
+        "status: estado, temperaturas y, si imprime, avance y tiempo restante. Cambia a cada minuto: "
+        "llámala cada vez que pregunten por la impresora, nunca repitas un estado de antes. "
         "preheat: precalentar boquilla y cama para material (pla o petg). "
         "load: calentar para meter filamento; Finnip avisa solo cuando es momento de meterlo. "
         "purge: cuando el usuario dice que ya metió el filamento, extruye 50 mm. "
