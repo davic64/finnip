@@ -36,6 +36,23 @@ class FakeHermes:
             self.closed += 1
 
 
+class FakeVoice:
+    """Voiceprint stand-in: the "embedding" is the phrase itself; scores by phrase, 0.9 by default."""
+    threshold = 0.5
+
+    def __init__(self, scores=None):
+        self.enrolled, self.scores, self.saved = scores is not None, scores or {}, None
+
+    async def embed(self, pcm16):
+        return pcm16.decode().strip("\x00") or None
+
+    def score(self, embedding):
+        return self.scores.get(embedding, 0.9)
+
+    def save(self, embeddings):
+        self.saved, self.enrolled = embeddings, True
+
+
 class FakeTts:
     async def synthesize(self, text):
         return f"mp3:{text}".encode()
@@ -288,6 +305,125 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(got[0], {"type": "wake"})
         self.assertIn({"type": "transcript", "text": "apaga la lámpara"}, got)
         self.assertEqual(self.hermes.prompts, ["apaga la lámpara"])
+
+    def test_a_voice_that_is_not_the_user_is_ignored(self):
+        voice = FakeVoice({"León es una película argentina": 0.1})
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), voice=voice))
+        self.hermes.replies.append((["Hola."], False))
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "León es una película argentina")
+            self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+            self.say(ws, "hola")
+            self.receive_until(ws, "done")
+        self.assertEqual(self.hermes.prompts, ["hola"])
+
+    def test_learn_my_voice_shows_each_phrase_and_saves_the_voiceprint(self):
+        from voice_gateway.voiceprint import ENROLL_PHRASES
+
+        voice = FakeVoice()  # not enrolled yet
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), voice=voice))
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "Finnip, aprende mi voz", wake=True)
+            got = self.receive_until(ws, "done")  # the spoken instructions end the turn
+            self.assertIn({"type": "enroll", "step": 1, "total": 5, "text": ENROLL_PHRASES[0]}, got)
+            for step, phrase in enumerate(ENROLL_PHRASES, 1):
+                self.say(ws, phrase, wake=True)  # standby: no "Finnip" needed while enrolling
+                self.assertEqual(ws.receive_json(), {"type": "transcript", "text": ""})
+                if step < 5:
+                    self.assertEqual(ws.receive_json()["step"], step + 1)
+            self.assertEqual(ws.receive_json(), {"type": "enroll", "done": True})
+            self.receive_until(ws, "done")
+        self.assertEqual(voice.saved, ENROLL_PHRASES)
+        self.assertEqual(self.hermes.prompts, [])  # none of it went to Hermes
+
+    def test_panel_saves_routines_for_the_plugin(self):
+        import tempfile
+        from voice_gateway import app as gateway
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gateway, "ROUTINES_FILE", os.path.join(tmp, "routines.json")):
+            client = TestClient(create_app(self.stt, self.hermes, FakeTts()))
+            self.assertEqual(client.get("/api/routines").status_code, 403)  # Tailscale user only
+            self.assertEqual(client.get("/api/routines", headers=USER).json(), {"routines": []})
+            home = {"phrase": " Despierta, ya llegó papá ", "reply": "Bienvenido a casa, señor.", "music": "rock"}
+            saved = client.put("/api/routines", json={"routines": [home]}, headers=USER).json()["routines"]
+            self.assertEqual(saved, [{"phrase": "Despierta, ya llegó papá", "reply": "Bienvenido a casa, señor.",
+                                      "music": "rock", "mode": "", "steps": []}])
+            lamp = {"device": "light.lampara", "action": "color", "params": {"rgb": [255, 0, 0], "brightness": 60}}
+            with_steps = client.put("/api/routines", json={"routines": [{**home, "steps": [lamp]}]}, headers=USER)
+            self.assertEqual(with_steps.json()["routines"][0]["steps"], [lamp])
+            saved = with_steps.json()["routines"]
+            for bad_step in ({"device": "../x", "action": "on"}, {"device": "light.lampara", "action": "command"}):
+                bad = client.put("/api/routines", json={"routines": [{**home, "steps": [bad_step]}]}, headers=USER)
+                self.assertEqual(bad.status_code, 400)
+            self.assertEqual(client.get("/api/routines", headers=USER).json()["routines"], saved)
+            bad = client.put("/api/routines", json={"routines": [{"phrase": ""}]}, headers=USER)
+            self.assertEqual(bad.status_code, 400)
+            form = client.put("/api/routines", content=b"routines=x", headers={**USER, "content-type": "text/plain"})
+            self.assertEqual(form.status_code, 415)
+
+    def test_panel_reaches_only_devices_and_modes_on_home_bridge(self):
+        asked = []
+
+        async def bridge(method, path, body=None):
+            asked.append((method, path, body))
+            return 200, {"ok": True}
+
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), bridge=bridge))
+        client.get("/api/modes", headers=USER)
+        client.put("/api/modes/calido", json={"steps": []}, headers=USER)
+        client.delete("/api/modes/calido", headers=USER)
+        self.assertEqual(client.get("/api/modes/..%2Fdevices", headers=USER).status_code, 404)
+        self.assertEqual(client.get("/api/modes/Calido!", headers=USER).status_code, 400)
+        self.assertEqual(client.post("/api/devices", headers=USER).status_code, 405)
+        self.assertEqual(asked, [("GET", "/modes", None), ("PUT", "/modes/calido", {"steps": []}),
+                                 ("DELETE", "/modes/calido", None)])
+
+    def test_a_routine_is_answered_word_for_word_without_hermes(self):
+        class FakeRoutines:
+            ran = []
+
+            async def find(self, text):
+                return {"phrase": "despierta ya llegó papá"} if "papá" in text else None
+
+            async def run(self, item):
+                self.ran.append(item["phrase"])
+                return "Bienvenido a casa, señor.", []
+
+        routines = FakeRoutines()
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), routines=routines))
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            self.say(ws, "Finnip, despierta, ya llegó papá", wake=True)
+            got = self.receive_until(ws, "done")
+        self.assertIn({"type": "reply_text", "seq": 0, "text": "Bienvenido a casa, señor."}, got)
+        self.assertEqual((routines.ran, self.hermes.prompts), (["despierta ya llegó papá"], []))
+
+    def test_low_battery_is_announced(self):
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts()))
+        with client.websocket_connect("/ws", headers=USER) as ws:
+            ws.send_json({"type": "battery", "level": 10})
+            got = self.receive_until(ws, "done")
+            ws.send_json({"type": "battery", "level": "x"})  # ignored
+        self.assertIn({"type": "announce", "text": "Me queda 10 % de pila, señor. Póngame a cargar, por favor."}, got)
+
+    def test_stats_asked_from_the_phone_show_on_the_desktop(self):
+        stats = {"cpu": 12, "ram_used": 2.9, "ram_total": 7.6, "disk_used": 27, "disk_total": 225,
+                 "temp": 37, "load": 0.34, "cores": 4, "uptime": 90000}
+
+        async def read_stats():
+            return stats
+
+        client = TestClient(create_app(self.stt, self.hermes, FakeTts(), stats=read_stats))
+        self.hermes.replies.append((["Todo bien."], False))
+        with client.websocket_connect("/ws", headers=USER) as desktop, \
+                client.websocket_connect("/ws", headers=USER) as phone:
+            desktop.send_json({"type": "hello", "client": "desktop"})
+            self.assertEqual(desktop.receive_json()["type"], "ready")
+            self.say(phone, "cómo está el servidor")
+            got = self.receive_until(phone, "done")
+            self.assertEqual(desktop.receive_json(), {"type": "stats", **stats})
+        self.assertFalse(any(isinstance(m, dict) and m["type"] == "stats" for m in got))
+        self.assertIn("RAM 2.9 de 7.6 GB", self.hermes.prompts[0])  # Finnip still reads them out
 
     def test_server_question_sends_stats_and_feeds_them_to_hermes(self):
         stats = {"cpu": 12, "ram_used": 2.9, "ram_total": 7.6, "disk_used": 27, "disk_total": 225,

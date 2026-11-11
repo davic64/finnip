@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#020409" />
+    <title>Panel de Finnip</title>
+    <link rel="icon" href="/icons/icon-192.png" />
+    <!-- Modes (Home Assistant scripts, through Home Bridge) and routines ("cuando diga X, responde Y y haz Z").
+         Same origin and Tailscale identity as the app; the voice gateway serves /api/*. -->
+    <style>
+      :root {
+        --bg: #020409;
+        --fg: #e6f1ff;
+        --holo: #38e1ff;
+        --muted: color-mix(in srgb, var(--holo) 45%, #8a96b0);
+        --line: color-mix(in srgb, var(--holo) 22%, transparent);
+        --glass: color-mix(in srgb, var(--holo) 6%, rgba(4, 8, 16, 0.55));
+        --danger: #ff5d6c;
+        --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+      main { max-width: 860px; margin: 0 auto; padding: max(env(safe-area-inset-top), 20px) 16px 48px; }
+      header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+      h1 { margin: 0; font: 600 13px var(--mono); letter-spacing: 0.3em; color: var(--holo); text-shadow: 0 0 10px var(--holo); }
+      h2 { margin: 0; font-size: 17px; font-weight: 600; }
+      .grow { flex: 1; }
+      button, input, select, textarea { font: inherit; color: inherit; }
+      button { background: var(--glass); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+      button:hover { border-color: var(--holo); }
+      button.primary { background: color-mix(in srgb, var(--holo) 22%, transparent); border-color: var(--holo); }
+      button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+      button.link { background: none; border: 0; color: var(--muted); padding: 4px 6px; }
+      input[type="text"], select, textarea { width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line);
+        border-radius: 8px; padding: 8px 10px; }
+      input[type="range"] { width: 100%; accent-color: var(--holo); }
+      input[type="color"] { width: 44px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; }
+      textarea { resize: vertical; min-height: 60px; }
+      label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+      .tabs button[aria-selected="true"] { border-color: var(--holo); color: var(--holo); }
+      .card { background: var(--glass); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+      .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .list .card { display: flex; align-items: center; gap: 12px; }
+      .tag { font: 11px var(--mono); letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+      .step { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end;
+        border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+      .params { grid-column: 1 / -1; display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+      .fields { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+      .fields .wide { grid-column: 1 / -1; }
+      .msg { min-height: 1.4em; font-size: 13px; color: var(--muted); }
+      .msg.error { color: var(--danger); }
+      .empty { color: var(--muted); }
+      @media (max-width: 560px) {
+        .step, .fields { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <button class="link" id="back" aria-label="Volver">← Volver</button>
+        <h1 class="grow">PANEL DE FINNIP</h1>
+      </header>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="modes" aria-selected="true">Modos</button>
+        <button role="tab" data-tab="routines" aria-selected="false">Rutinas</button>
+      </nav>
+      <section id="modes"></section>
+      <section id="routines" hidden></section>
+    </main>
+    <script>
+      // Actions a mode step can have (Home Bridge MODE_ACTIONS), with their Spanish label.
+      const ACTIONS = {
+        on: "Encender", off: "Apagar", brightness: "Brillo", color: "Color", color_temp: "Luz blanca (temperatura)",
+        volume: "Volumen", pause: "Pausar", resume: "Reanudar", open: "Abrir", close: "Cerrar", stop: "Detener",
+        position: "Posición", temperature: "Temperatura", hvac_mode: "Modo del clima",
+      };
+      const $ = (sel, root = document) => root.querySelector(sel);
+      const el = (tag, props = {}, ...kids) => {
+        const node = Object.assign(document.createElement(tag), props);
+        node.append(...kids.filter((k) => k !== null && k !== undefined));
+        return node;
+      };
+      async function api(method, path, body) {
+        const res = await fetch(`/api/${path}`, {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : {},
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || `Error ${res.status}`);
+        return data;
+      }
+      const hex = (rgb) => "#" + (rgb || [255, 255, 255]).map((c) => c.toString(16).padStart(2, "0")).join("");
+      const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const slugOf = (name) => name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+        .replace(/^modo\s+/, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
+
+      let devices = [];
+      let modes = [];
+
+      $("#back").onclick = () => (history.length > 1 ? history.back() : (location.href = "/"));
+      document.querySelectorAll("[data-tab]").forEach((tab) =>
+        tab.addEventListener("click", () => {
+          document.querySelectorAll("[data-tab]").forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+          $("#modes").hidden = tab.dataset.tab !== "modes";
+          $("#routines").hidden = tab.dataset.tab !== "routines";
+        }),
+      );
+
+      // --- modes -------------------------------------------------------------------------------------
+
+      function rangeField(label, value, min, max, unit, onInput) {
+        const out = el("span", { textContent: `${value}${unit}` });
+        const input = el("input", { type: "range", min, max, value });
+        input.oninput = () => {
+          out.textContent = `${input.value}${unit}`;
+          onInput(Number(input.value));
+        };
+        return el("label", {}, el("span", {}, `${label}: `, out), input);
+      }
+
+      /** The inputs for one step's params, written into step.params as they change. */
+      function paramsFor(step, device) {
+        const p = step.params;
+        const box = el("div", { className: "params" });
+        if (step.action === "brightness" || step.action === "color" || step.action === "color_temp") {
+          p.brightness ??= 100;
+          box.append(rangeField("Brillo", p.brightness, 1, 100, " %", (v) => (p.brightness = v)));
+        }
+        if (step.action === "color") {
+          p.rgb ??= [255, 255, 255];
+          const pick = el("input", { type: "color", value: hex(p.rgb) });
+          pick.oninput = () => (p.rgb = rgb(pick.value));
+          box.append(el("label", {}, "Color", pick));
+        }
+        if (step.action === "color_temp") {
+          const min = device?.min_color_temp_kelvin || 2000;
+          const max = device?.max_color_temp_kelvin || 6500;
+          p.kelvin ??= Math.round((min + max) / 2);
+          box.append(rangeField("Temperatura", p.kelvin, min, max, " K", (v) => (p.kelvin = v)));
+        }
+        if (step.action === "volume") {
+          p.volume ??= 30;
+          box.append(rangeField("Volumen", p.volume, 0, 100, " %", (v) => (p.volume = v)));
+        }
+        if (step.action === "position") {
+          p.position ??= 100;
+          box.append(rangeField("Posición", p.position, 0, 100, " %", (v) => (p.position = v)));
+        }
+        if (step.action === "temperature") {
+          p.temperature ??= 22;
+          box.append(rangeField("Temperatura", p.temperature, 16, 30, " °C", (v) => (p.temperature = v)));
+        }
+        return box;
+      }
+
+      function stepEditor(step, steps, redraw) {
+        const usable = devices.filter((d) => d.domain !== "script" && d.capabilities.some((c) => c in ACTIONS));
+        const device = () => devices.find((d) => d.id === step.device);
+        const deviceSel = el("select", {}, ...usable.map((d) => el("option", { value: d.id, textContent: d.name })));
+        deviceSel.value = step.device;
+        const actionSel = el("select");
+        const fillActions = () => {
+          const caps = (device()?.capabilities || []).filter((c) => c in ACTIONS);
+          actionSel.replaceChildren(...caps.map((c) => el("option", { value: c, textContent: ACTIONS[c] })));
+          if (!caps.includes(step.action)) step.action = caps.includes("brightness") ? "brightness" : caps[0];
+          actionSel.value = step.action;
+        };
+        fillActions();
+        const remove = el("button", { className: "link", textContent: "Quitar", type: "button" });
+        const box = el("div", { className: "step" },
+          el("label", {}, "Dispositivo", deviceSel), el("label", {}, "Qué hace", actionSel), remove,
+          paramsFor(step, device()));
+        deviceSel.onchange = () => { step.device = deviceSel.value; step.params = {}; fillActions(); redraw(); };
+        actionSel.onchange = () => { step.action = actionSel.value; step.params = {}; redraw(); };
+        remove.onclick = () => { steps.splice(steps.indexOf(step), 1); redraw(); };
+        return box;
+      }
+
+      function editMode(mode) {
+        const draft = structuredClone(mode || { name: "", music: true, steps: [] });
+        const root = $("#modes");
+        const msg = el("p", { className: "msg" });
+        const name = el("input", { type: "text", value: draft.name, placeholder: "Modo cine", maxLength: 60 });
+        const music = el("input", { type: "checkbox", checked: draft.music });
+        const stepsBox = el("div");
+        const redraw = () => stepsBox.replaceChildren(...draft.steps.map((s) => stepEditor(s, draft.steps, redraw)));
+        const add = el("button", { textContent: "+ Agregar paso", type: "button" });
+        add.onclick = () => {
+          const first = devices.find((d) => d.domain === "light") || devices.find((d) => d.domain !== "script");
+          if (!first) return (msg.textContent = "No hay dispositivos expuestos a Finnip.");
+          draft.steps.push({ device: first.id, action: "", params: {} });
+          redraw();
+        };
+        const save = el("button", { className: "primary", textContent: "Guardar", type: "button" });
+        save.onclick = async () => {
+          const slug = mode?.slug || slugOf(name.value);
+          if (!slug) return (msg.textContent = "Ponle nombre al modo.");
+          if (!draft.steps.length) return (msg.textContent = "Agrega al menos un paso.");
+          msg.className = "msg";
+          msg.textContent = "Guardando…";
+          try {
+            await api("PUT", `modes/${slug}`, { name: name.value.trim() || undefined, music: music.checked, steps: draft.steps });
+            await showModes();
+          } catch (err) {
+            msg.className = "msg error";
+            msg.textContent = err.message;
+          }
+        };
+        const cancel = el("button", { className: "link", textContent: "Cancelar", type: "button" });
+        cancel.onclick = showModes;
+        redraw();
+        root.replaceChildren(el("div", { className: "card" },
+          el("h2", { textContent: mode ? `Editar ${mode.name}` : "Modo nuevo" }),
+          el("div", { className: "fields", style: "margin-top:12px" },
+            el("label", {}, "Nombre", name),
+            el("label", { className: "row", style: "align-self:end" }, music, "Finnip elige música al activarlo")),
+          stepsBox,
+          el("div", { className: "row", style: "margin-top:14px" }, add, el("span", { className: "grow" }), cancel, save),
+          msg));
+      }
+
+      async function showModes() {
+        const root = $("#modes");
+        root.replaceChildren(el("p", { className: "empty", textContent: "Cargando…" }));
+        try {
+          [devices, modes] = await Promise.all([
+            api("GET", "devices").then((r) => r.devices),
+            api("GET", "modes").then((r) => r.modes),
+          ]);
+        } catch (err) {
+          return root.replaceChildren(el("p", { className: "msg error", textContent: err.message }));
+        }
+        const add = el("button", { className: "primary", textContent: "+ Modo nuevo" });
+        add.onclick = () => editMode(null);
+        const list = el("div", { className: "list" }, ...modes.map((mode) => {
+          const edit = el("button", { textContent: "Editar", disabled: !mode.editable,
+            title: mode.editable ? "" : "Tiene pasos editados a mano en Home Assistant" });
+          edit.onclick = () => editMode(mode);
+          const del = el("button", { className: "danger", textContent: "Borrar" });
+          del.onclick = async () => {
+            if (!confirm(`¿Borrar ${mode.name}?`)) return;
+            try { await api("DELETE", `modes/${mode.slug}`); await showModes(); } catch (err) { alert(err.message); }
+          };
+          return el("div", { className: "card" },
+            el("div", { className: "grow" }, el("h2", { textContent: mode.name }),
+              el("span", { className: "tag", textContent: `${mode.steps?.length ?? "?"} pasos · ${mode.music ? "con música" : "sin música"}` })),
+            edit, del);
+        }));
+        root.replaceChildren(el("div", { className: "row", style: "margin-bottom:12px" },
+          el("span", { className: "grow empty", textContent: "Di «Finnip, modo …» para activarlos." }), add),
+          modes.length ? list : el("p", { className: "empty", textContent: "Todavía no hay modos." }));
+      }
+
+      // --- routines ----------------------------------------------------------------------------------
+
+      async function showRoutines() {
+        const root = $("#routines");
+        let routines;
+        try {
+          routines = (await api("GET", "routines")).routines;
+          if (!modes.length) modes = (await api("GET", "modes")).modes;
+          if (!devices.length) devices = (await api("GET", "devices")).devices;
+        } catch (err) {
+          return root.replaceChildren(el("p", { className: "msg error", textContent: err.message }));
+        }
+        const msg = el("p", { className: "msg" });
+        const box = el("div");
+        const draw = () => box.replaceChildren(...routines.map((r) => {
+          const field = (key, label, { tag = "input", wide, ...props }) => {
+            // textarea.type is read-only: assigning it threw and left the list empty
+            const input = el(tag, { ...(tag === "input" ? { type: "text" } : {}), value: r[key] || "", ...props });
+            input.oninput = () => (r[key] = input.value);
+            return el("label", { className: wide ? "wide" : "" }, label, input);
+          };
+          const mode = el("select", {}, el("option", { value: "", textContent: "Ninguno" }),
+            ...modes.map((m) => el("option", { value: m.name, textContent: m.name })));
+          mode.value = r.mode || "";
+          mode.onchange = () => (r.mode = mode.value);
+          // Actions: the same step editor as modes (lights on/off, brightness, color, volume…).
+          r.steps ??= [];
+          const steps = el("div");
+          const drawSteps = () => steps.replaceChildren(...r.steps.map((st) => stepEditor(st, r.steps, drawSteps)));
+          drawSteps();
+          const addStep = el("button", { textContent: "+ Acción", type: "button" });
+          addStep.onclick = () => {
+            const first = devices.find((d) => d.domain === "light") || devices.find((d) => d.domain !== "script");
+            if (!first) return;
+            r.steps.push({ device: first.id, action: "", params: {} });
+            drawSteps();
+          };
+          const remove = el("button", { className: "link", textContent: "Quitar rutina", type: "button" });
+          remove.onclick = () => { routines.splice(routines.indexOf(r), 1); draw(); };
+          return el("div", { className: "card" }, el("div", { className: "fields" },
+            field("phrase", "Cuando diga «Finnip, …»", { placeholder: "despierta, ya llegó papá", maxLength: 80, wide: true }),
+            field("reply", "Finnip responde exactamente", { tag: "textarea", placeholder: "Bienvenido a casa, señor.", maxLength: 300, wide: true }),
+            field("music", "Música en Alexa (opcional)", { placeholder: "la playlist 80s Hard Rock Essentials", maxLength: 120 }),
+            el("label", {}, "Activa el modo (opcional)", mode)),
+            el("p", { className: "tag", style: "margin:16px 0 0", textContent: "Acciones (opcional)" }),
+            steps,
+            el("div", { className: "row", style: "margin-top:12px" }, addStep, el("span", { className: "grow" }), remove));
+        }));
+        const add = el("button", { textContent: "+ Rutina nueva", type: "button" });
+        add.onclick = () => { routines.push({ phrase: "", reply: "", music: "", mode: "", steps: [] }); draw(); };
+        const save = el("button", { className: "primary", textContent: "Guardar rutinas", type: "button" });
+        save.onclick = async () => {
+          msg.className = "msg";
+          msg.textContent = "Guardando…";
+          try {
+            routines = (await api("PUT", "routines", { routines })).routines;
+            draw();
+            msg.textContent = "Guardado. Finnip ya las usa.";
+          } catch (err) {
+            msg.className = "msg error";
+            msg.textContent = err.message;
+          }
+        };
+        draw();
+        root.replaceChildren(el("p", { className: "empty", textContent: "Al decir la frase, Finnip hace las acciones, activa el modo, pone la música y responde solo el texto que pongas." }),
+          box, el("div", { className: "row" }, add, el("span", { className: "grow" }), save), msg);
+      }
+
+      showModes().then(showRoutines);
+    </script>
+  </body>
+</html>

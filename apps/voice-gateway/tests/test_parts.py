@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import threading
 import unittest
@@ -30,9 +31,10 @@ class FakeParts:
 class PartsGatewayTest(unittest.TestCase):
     def setUp(self):
         self.parts = FakeParts()
+        self.hermes = FakeHermes()
         # As a context manager the client keeps one event loop for every request and websocket, like the
         # real server; otherwise /internal/photo and the desktop socket would live on different loops.
-        self.client = TestClient(create_app(FakeStt(), FakeHermes(), FakeTts(), parts=self.parts)).__enter__()
+        self.client = TestClient(create_app(FakeStt(), self.hermes, FakeTts(), parts=self.parts)).__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
     def connect(self, client_kind):
@@ -70,6 +72,43 @@ class PartsGatewayTest(unittest.TestCase):
         self.assertEqual(phone.receive_json()["type"], "ready")  # the phone got no "part" event before this
         for bad in ({**body, "slug": "../x"}, {**body, "version": "2"}, {**body, "version": 0}):
             self.assertEqual(self.client.post("/internal/part", json=bad, headers=AUTH).status_code, 400)
+
+    def test_project_requests_go_to_the_mac_and_finished_tasks_are_told(self):
+        body = {"action": "create", "name": "tienda", "shell": "rm -rf ~"}
+        self.assertEqual(self.client.post("/internal/project", json=body, headers=AUTH).status_code, 409)
+        self.assertEqual(self.client.post("/internal/project", json={"action": "exec"}, headers=AUTH).status_code, 400)
+        self.hermes.replies += [(["Hola."], False), (["Ya quedó la página, señor."], False)]
+
+        def until(ws, kind):
+            got = []
+            while not (got and isinstance(got[-1], dict) and got[-1]["type"] == kind):
+                msg = ws.receive()
+                got.append(msg.get("bytes") if msg.get("bytes") is not None else json.loads(msg["text"]))
+            return got
+
+        phone, desktop = self.connect("pwa"), self.connect("desktop")
+        if True:
+            result = {}
+            thread = threading.Thread(target=lambda: result.update(
+                r=self.client.post("/internal/project", json=body, headers=AUTH)))
+            thread.start()
+            asked = desktop.receive_json()
+            self.assertEqual({k: asked[k] for k in ("type", "action", "name")},
+                             {"type": "project_request", "action": "create", "name": "tienda"})
+            self.assertNotIn("shell", asked)  # only the known fields reach the Mac
+            desktop.send_json({"type": "project_result", "id": asked["id"], "result": {"created": "tienda"}})
+            thread.join(10)
+            self.assertEqual(result["r"].json(), {"created": "tienda"})
+            # The user spoke from the phone last: Claude Code's news is told there.
+            phone.send_bytes(b"hola")
+            phone.send_json({"type": "utterance_end"})
+            until(phone, "done")
+            desktop.send_json({"type": "project_done", "name": "tienda", "result": "Hice la página.",
+                               "pending": ["npm install"]})
+            got = until(phone, "done")
+        self.assertIn({"type": "reply_text", "seq": 0, "text": "Ya quedó la página, señor."}, got)
+        self.assertIn("npm install", self.hermes.prompts[-1])
+        self.assertIn("confirmed true", self.hermes.prompts[-1])
 
     def photo(self, answer):
         """Asks for a photo while the desktop app answers with `answer` (or never, if None)."""

@@ -88,6 +88,8 @@ class WakeWordTest(unittest.TestCase):
         self.assertEqual(T.after_wake_word("Ah, Finnip, apaga la lámpara"), "apaga la lámpara")
         self.assertEqual(T.after_wake_word("Y Phinnip qué hora es"), "qué hora es")
         self.assertEqual(T.after_wake_word("Phillip, pausa"), "pausa")
+        self.assertEqual(T.after_wake_word("Fine."), "")  # from the phone across the room
+        self.assertEqual(T.after_wake_word("Fanny, ¿qué hora es?"), "¿qué hora es?")
 
     def test_anywhere_in_a_standby_window(self):
         self.assertEqual(T.after_wake_word("and then the installation Finnip, pausa el video", anywhere=True),

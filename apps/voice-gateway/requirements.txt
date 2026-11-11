@@ -6,3 +6,4 @@ onnxruntime==1.31.1
 huggingface_hub==2.4.0
 edge-tts==7.3.1
 numpy==2.2.5
+sherpa-onnx==1.13.8

@@ -61,7 +61,7 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.6; }
 /* Stage: the canvas draws the hologram centered on #orb, which is only the tap target. */
 .stage { position: relative; display: grid; place-items: center; min-height: 0; }
 .orb {
-  width: min(78vw, 70%, 420px);
+  width: min(78vw, 70%, 420px, 62dvh); /* 62dvh: square and clear of the status line in landscape */
   aspect-ratio: 1;
   max-height: 88%;
   border: 0;
@@ -418,3 +418,23 @@ body[data-state="thinking"] .status { animation: blink 1s steps(2) infinite; }
   font: 600 14px/1.4 ui-monospace, Menlo, monospace; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
 .desktop body.photo-taken::after { opacity: 1; box-shadow: 0 0 0 100vmax rgba(255, 255, 255, 0.08); }
 .desktop body[data-scene="part"]::before { opacity: 1; }
+
+/* Android app (?phone=1): only settings in the header, no resting hint, the hologram a bit higher. */
+.phone .modes, .phone #fullscreen { display: none !important; }
+.phone #settings-btn { margin-left: auto; }
+.phone .status { visibility: hidden; } /* the hologram already shows listening and thinking */
+.phone .app { max-width: none; }
+.phone .top { padding: 0 6vw; } /* name and settings a bit in from the edges */
+.phone .stage { padding-bottom: 6dvh; }
+.phone .orb { width: min(92vw, 74dvh); max-height: none; }
+
+/* "Aprende mi voz": the phrase to read, over everything, on the phone and on the Mac. */
+.enroll { position: fixed; z-index: 20; left: 50%; top: 16%; transform: translateX(-50%); width: min(90vw, 760px);
+  padding: 20px 24px; text-align: center; font-family: var(--mono); background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--line); border-radius: 12px; }
+.enroll small { display: block; font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; color: var(--muted); }
+.enroll p { margin: 12px 0 0; font-size: clamp(18px, 3.2vw, 28px); line-height: 1.35; color: var(--holo);
+  text-shadow: 0 0 10px var(--holo); }
+
+/* Settings: link to the panel (modes and routines). */
+.panel-link { color: var(--holo); text-decoration: none; justify-content: space-between; }

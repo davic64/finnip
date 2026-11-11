@@ -14,6 +14,10 @@ use std::{
     time::Duration,
 };
 
+mod projects;
+
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::{
     image::Image,
@@ -44,11 +48,13 @@ struct Settings {
     /// Monitor chosen in the menu (monitor_id: name and position); None = the primary one.
     display: Option<String>,
     shortcut: String,
+    /// Listening for "Finnip" turned off in the menu; the shortcut still opens the mic for one phrase.
+    muted: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display: None, shortcut: DEFAULT_SHORTCUT.into() }
+        Self { display: None, shortcut: DEFAULT_SHORTCUT.into(), muted: false }
     }
 }
 
@@ -90,8 +96,9 @@ struct Finnip {
     part_box: Mutex<Option<[f64; 4]>>,
 }
 
-fn page_url() -> String {
-    format!("{}/?desktop=1", FINNIP_URL.trim_end_matches('/'))
+/// muted: the page loads with the mic closed (no flash of the macOS mic indicator).
+fn page_url(muted: bool) -> String {
+    format!("{}/?desktop=1{}", FINNIP_URL.trim_end_matches('/'), if muted { "&muted=1" } else { "" })
 }
 
 fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
@@ -105,12 +112,8 @@ fn page(app: &AppHandle, js: &str) {
     }
 }
 
+/// Also with listening off: the page opens the mic for one phrase and closes it again.
 fn talk(app: &AppHandle) {
-    let state = app.state::<Finnip>();
-    if state.muted.swap(false, Ordering::SeqCst) {
-        page(app, "window.finnipDesktop?.mute(false)");
-        refresh_tray(app);
-    }
     page(app, "window.finnipDesktop?.talk()");
 }
 
@@ -182,7 +185,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let status = if !state.online.load(Ordering::SeqCst) {
         "Sin conexión con Finnip"
     } else if muted {
-        "Micrófono silenciado"
+        "Escucha desactivada"
     } else {
         "Escuchando «Finnip»"
     };
@@ -200,9 +203,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &MenuItem::with_id(app, "status", status, false, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(app, "show", "Mostrar Finnip", true, state.visible.load(Ordering::SeqCst), None::<&str>)?,
-            &CheckMenuItem::with_id(app, "mute", "Silenciar micrófono", true, muted, None::<&str>)?,
+            &CheckMenuItem::with_id(app, "mute", "Escuchar «Finnip»", true, !muted, None::<&str>)?,
             &screens,
             &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "panel", "Modos y rutinas…", true, None::<&str>)?,
             &MenuItem::with_id(app, "prefs", "Preferencias…", true, Some("CmdOrCtrl+,"))?,
             &CheckMenuItem::with_id(app, "autostart", "Abrir al iniciar sesión", true, autostart, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -248,8 +252,17 @@ fn on_menu(app: &AppHandle, id: &str) {
             let on = !state.muted.load(Ordering::SeqCst);
             state.muted.store(on, Ordering::SeqCst);
             page(app, &format!("window.finnipDesktop?.mute({on})"));
+            let mut settings = state.settings.lock().unwrap();
+            settings.muted = on;
+            let _ = save_settings(&state.path, &settings);
         }
         "prefs" => open_prefs(app),
+        // The panel (modes and routines) in the default browser: it needs clicks and typing.
+        "panel" => {
+            let _ = std::process::Command::new("open")
+                .arg(format!("{}/panel.html", FINNIP_URL.trim_end_matches('/')))
+                .spawn();
+        }
         "autostart" => {
             let launcher = app.autolaunch();
             let _ = if launcher.is_enabled().unwrap_or(false) { launcher.disable() } else { launcher.enable() };
@@ -300,7 +313,7 @@ fn watch(app: AppHandle) {
             if up != was {
                 if up {
                     // the page may have failed to load while the gateway was down: load it again
-                    if let (Some(window), Ok(url)) = (overlay(&app), page_url().parse()) {
+                    if let (Some(window), Ok(url)) = (overlay(&app), page_url(state.muted.load(Ordering::SeqCst)).parse()) {
                         let _ = window.navigate(url);
                     }
                 }
@@ -332,6 +345,18 @@ fn open_prefs(app: &AppHandle) {
 #[tauri::command]
 fn part_box(state: tauri::State<Finnip>, rect: Option<[f64; 4]>) {
     *state.part_box.lock().unwrap() = rect.filter(|r| r.iter().all(|v| v.is_finite()) && r[2] > 0.0 && r[3] > 0.0);
+}
+
+/// The overlay page asks for a project action on behalf of the server ("Finnip, nuevo proyecto…").
+/// projects.rs checks every name, repository and command; a finished Claude Code task comes back to
+/// the page through its hook, and the page passes it to the server.
+#[tauri::command]
+async fn project(app: AppHandle, request: projects::Request) -> Result<serde_json::Value, String> {
+    let projects = app.state::<Arc<projects::Projects>>().inner().clone();
+    let handle = app.clone();
+    let on_done: projects::OnDone =
+        Arc::new(move |done| page(&handle, &format!("window.finnipDesktop?.projectDone({done})")));
+    tauri::async_runtime::spawn_blocking(move || projects.handle(request, on_done)).await.map_err(|e| e.to_string())?
 }
 
 /// Whether a cursor at (x, y), in the overlay's CSS pixels, is over the part's box.
@@ -406,7 +431,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![get_settings, set_shortcut, part_box])
+        .invoke_handler(tauri::generate_handler![get_settings, set_shortcut, part_box, project])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory); // no Dock icon, no Cmd-Tab
@@ -423,10 +448,14 @@ fn main() {
             if let Err(e) = app.global_shortcut().register(settings.shortcut.as_str()) {
                 eprintln!("atajo {} no disponible: {e}", settings.shortcut);
             }
+            let muted = settings.muted;
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+            let data = app.path().app_data_dir()?;
+            app.manage(Arc::new(projects::Projects::new(home, data.join("projects.json"))));
             app.manage(Finnip {
                 path,
                 settings: Mutex::new(settings),
-                muted: AtomicBool::new(false),
+                muted: AtomicBool::new(muted),
                 visible: AtomicBool::new(true),
                 online: AtomicBool::new(true),
                 shown_on: Mutex::new(None),
@@ -437,10 +466,11 @@ fn main() {
                 CapabilityBuilder::new("overlay-part")
                     .remote(format!("{}/*", FINNIP_URL.trim_end_matches('/')))
                     .window("overlay")
-                    .permission("allow-part-box"),
+                    .permission("allow-part-box")
+                    .permission("allow-project"),
             )?;
 
-            let overlay = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::External(page_url().parse()?))
+            let overlay = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::External(page_url(muted).parse()?))
                 .title("Finnip")
                 .transparent(true)
                 .decorations(false)
@@ -497,7 +527,7 @@ mod tests {
     #[test]
     fn settings_round_trip() {
         let path = temp_path("roundtrip");
-        let settings = Settings { display: Some("HUAWEI AD80HW@1920,0".into()), shortcut: "Control+Alt+Space".into() };
+        let settings = Settings { display: Some("HUAWEI AD80HW@1920,0".into()), shortcut: "Control+Alt+Space".into(), muted: true };
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(&path), settings);
         assert!(!path.with_extension("json.tmp").exists());

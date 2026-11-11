@@ -94,6 +94,18 @@ class ModelRouter:
     async def apply(self, order):
         """(what to tell the user, (provider, model) or None)."""
         return await asyncio.to_thread(self.plugin.apply_order, order, self.state_path)
+class Routines:
+    """The panel's routines, through the finnip-lights plugin (mounted read only): found and run here,
+    so Finnip says the routine's reply word for word without asking the model."""
+    def __init__(self, path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("finnip_lights", path)
+        self.plugin = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.plugin)
+    async def find(self, text):
+        return await asyncio.to_thread(self.plugin.routine, text)
+    async def run(self, item):
+        return await asyncio.to_thread(self.plugin.run_routine, item)
 class Printer:
     """Watcher side of the finnip-printer Hermes plugin (mounted read only): step() carries out what
     waits for a temperature or for the print, and returns what Finnip has to say on its own."""
@@ -134,11 +146,17 @@ class EdgeTts:
     async def synthesize(self, text):
         import edge_tts
         text = re.sub(r"\bfinnip\b", "Fínnip", text, flags=re.IGNORECASE)  # stress on the first i
-        audio = bytearray()
-        async for chunk in edge_tts.Communicate(text, self.voice).stream():
-            if chunk["type"] == "audio":
-                audio += chunk["data"]
-        return bytes(audio)
+        for attempt in range(3):  # Edge sometimes answers with no audio at all (NoAudioReceived): try again
+            try:
+                audio = bytearray()
+                async for chunk in edge_tts.Communicate(text, self.voice).stream():
+                    if chunk["type"] == "audio":
+                        audio += chunk["data"]
+                return bytes(audio)
+            except edge_tts.exceptions.NoAudioReceived:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.3)
 
 
 def host_stats(disk_path="/"):

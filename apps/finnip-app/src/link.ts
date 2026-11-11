@@ -10,6 +10,8 @@ export type ServerEvent =
   | { type: "resume" }
   | { type: "wake" }
   | { type: "announce"; text: string }
+  | { type: "enroll"; step?: number; total?: number; text?: string; done?: boolean }
+  | { type: "project_request"; id: string; action: string; name?: string; repo?: string; request?: string; allow?: string[] }
   | { type: "theme"; rgb: [number, number, number] }
   | {
       type: "now_playing"; active: boolean; state: string; title: string | null; artist: string | null;

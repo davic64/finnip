@@ -356,6 +356,77 @@ def leaves_choice(query):
     return words[0] in GENERIC and (len(words) == 1 or words[1] != "de")
 
 
+# The user's routines ("cuando diga X, responde Y y haz Z"), edited in the panel (/panel.html) and stored
+# by the voice gateway. Read on every phrase, so a change applies at once.
+ROUTINES_FILE = os.environ.get("FINNIP_ROUTINES", "/opt/finnip-routines/routines.json")
+ROUTINE_MATCH = 0.85  # "Despier, ya llegó papá" still matches "despierta, ya llegó papá"
+
+
+def load_routines():
+    try:
+        with open(ROUTINES_FILE) as f:
+            routines = json.load(f).get("routines", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [r for r in routines if isinstance(r, dict) and str(r.get("phrase") or "").strip()]
+
+
+def _words(text):
+    return re.sub(r"[^\w ]", " ", normalize(text)).split()
+
+
+def routine(message, routines=None):
+    """The routine whose phrase is said in the message (tolerant to how the STT spells it), or None."""
+    words = _words(message)
+    for item in load_routines() if routines is None else routines:
+        phrase = " ".join(_words(item["phrase"]))
+        n = len(phrase.split())
+        for i in range(max(1, len(words) - n + 1)):
+            if difflib.SequenceMatcher(None, " ".join(words[i:i + n]), phrase).ratio() >= ROUTINE_MATCH:
+                return item
+    return None
+
+
+def run_routine(item):
+    """Does the routine's mode, actions and music -> (its exact reply, what failed). The voice gateway
+    calls it directly (no model at all); Hermes (Telegram) through routine_fast_path."""
+    failed = []
+    try:
+        devices = call_bridge("GET", "/devices").get("devices", [])
+        if item.get("mode"):
+            scripts = {normalize(d.get("name", "")): d for d in devices if d.get("domain") == "script"}
+            name = difflib.get_close_matches(normalize(item["mode"]), list(scripts), n=1, cutoff=0.8)
+            if name:
+                call_bridge("POST", f"/devices/{scripts[name[0]]['id']}/run")
+            else:
+                failed.append(f"no existe el modo {item['mode']}")
+        for step in item.get("steps") or []:  # lights, colors, volume: Home Bridge checks each one
+            try:
+                call_bridge("POST", f"/devices/{step['device']}/{step['action']}", step.get("params") or None)
+            except Exception as error:
+                failed.append(f"{step.get('device')}: {error}")
+        if item.get("music"):
+            speakers = [d for d in devices if d.get("domain") == "media_player"]
+            if speakers:
+                call_bridge("POST", f"/devices/{speakers[0]['id']}/play", {"query": item["music"]})
+            else:
+                failed.append("no hay bocina")
+    except Exception as error:
+        failed.append(str(error))
+    return str(item.get("reply") or "").strip() or "Listo, señor.", failed
+
+
+def routine_fast_path(user_message):
+    """Runs the routine before the model's turn; the model only says its reply."""
+    item = routine(user_message)
+    if item is None:
+        return None
+    reply, failed = run_routine(item)
+    note = f" Después, en una frase corta, dile que falló: {'; '.join(failed)}." if failed else ""
+    return {"context": (f"[finnip fast path] La rutina del usuario «{item['phrase']}» YA se ejecutó. Responde exactamente "
+                        f"y solo esto, sin agregar nada ni llamar herramientas: «{reply}».{note}")}
+
+
 def parse_music_order(message):
     """Short, unambiguous orders for the Alexa speaker -> (action, body), else None.
     '"Pausa la música."' -> ("pause", None); '"Reproduce Coldplay en Alexa"' -> ("play", {"query": "Coldplay"})."""
@@ -467,15 +538,21 @@ def music_fast_path(user_message):
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté '{action}' en Alexa antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
+    # Alexa takes a few seconds to change songs: the title in the reply may still be the previous one.
+    heard = (f"Pedí '{body['query']}'. NO digas qué canción suena (el título de la respuesta puede ser el de "
+             "antes): confirma solo lo que pusiste. " if action == "play" else "")
     return {"context": (
         f"[finnip fast path] Esta orden de música YA se ejecutó en Alexa antes de tu turno: {action}. "
-        f"Respuesta de Home Bridge: {json.dumps(result, ensure_ascii=False)}. "
+        f"Respuesta de Home Bridge: {json.dumps(result, ensure_ascii=False)}. {heard}"
         "No vuelvas a llamar herramientas ni a verificar; confirma al usuario en una frase corta.")}
 
 
 def fast_path_hook(user_message=None, **kwargs):
     if not isinstance(user_message, str) or "\n" in user_message.strip():
         return None
+    done = routine_fast_path(user_message)
+    if done is not None:
+        return done
     mode = mode_fast_path(user_message)
     if mode is not None:
         return mode

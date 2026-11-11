@@ -297,6 +297,33 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((read, deleted, listed), ([("GET", "/modes/estudio", None)], [("DELETE", "/modes/cine", None)],
                                                    [("GET", "/modes", None)]))
 
+    def test_routines_match_their_phrase_as_the_stt_writes_it(self):
+        home = {"phrase": "despierta, ya llegó papá", "reply": "Bienvenido a casa, señor.", "music": "rock"}
+        self.assertIs(plugin.routine("Finnip, despierta, ya llegó papá.", [home]), home)
+        self.assertIs(plugin.routine("Despier, ya llegó papá.", [home]), home)
+        self.assertIsNone(plugin.routine("Ya llegó papá.", [home]))  # without "despierta"
+        self.assertIsNone(plugin.routine("ya llegó la pizza", [home]))
+
+    def test_a_routine_runs_its_mode_and_music_and_says_its_reply(self):
+        home = {"phrase": "despierta ya llegó papá", "reply": "Bienvenido a casa, señor.", "music": "rock",
+                "mode": "modo cálido", "steps": [{"device": "light.lampara", "action": "brightness",
+                                                  "params": {"brightness": 40}}]}
+        devices = {"devices": [{"id": "script.modo_calido", "name": "Modo cálido", "domain": "script"},
+                               {"id": "media_player.echo", "name": "Echo", "domain": "media_player"}]}
+        calls = []
+
+        def bridge(method, path, body=None):
+            calls.append((method, path, body))
+            return devices if path == "/devices" else {"success": True}
+
+        with mock.patch.object(plugin, "load_routines", return_value=[home]), \
+                mock.patch.object(plugin, "call_bridge", bridge):
+            done = plugin.fast_path_hook(user_message="Despierta, ya llegó papá.")
+        self.assertIn(("POST", "/devices/script.modo_calido/run", None), calls)
+        self.assertIn(("POST", "/devices/media_player.echo/play", {"query": "rock"}), calls)
+        self.assertIn(("POST", "/devices/light.lampara/brightness", {"brightness": 40}), calls)
+        self.assertIn("«Bienvenido a casa, señor.»", done["context"])
+
     def test_step_params_declare_their_fields(self):
         params = plugin.SCHEMA["parameters"]["properties"]["steps"]["items"]["properties"]["params"]
         self.assertEqual(params["properties"]["kelvin"]["type"], "integer")

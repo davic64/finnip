@@ -11,6 +11,7 @@ import time
 import uuid
 from array import array
 
+import httpx
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,9 +21,25 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from . import text as T
+from .voiceprint import ENROLL_PHRASES
 
 log = logging.getLogger("voice_gateway")
 MAX_UTTERANCE_BYTES = 16000 * 2 * 60  # 60 s of PCM16 mono 16 kHz
+# The panel (/panel.html): the user's routines, read by the finnip-lights plugin on every phrase.
+ROUTINES_FILE = os.environ.get("ROUTINES_FILE", "/routines/routines.json")
+ROUTINE_FIELDS = {"phrase": 80, "reply": 300, "music": 120, "mode": 60}  # field -> max length
+MAX_ROUTINES = 50
+MAX_STEPS = 30
+# What a routine's step may do: Home Bridge's mode actions (it checks the values when the step runs).
+STEP_ACTIONS = {"on", "off", "brightness", "color", "color_temp", "open", "close", "stop", "position",
+                "temperature", "hvac_mode", "pause", "resume", "volume"}
+MODE_SLUG = re.compile(r"^[a-z0-9_]{1,40}$")
+ENROLL_TIMEOUT = 120.0
+# Voice projects: actions the Mac app does for Finnip (projects.rs there checks every value again).
+PROJECT_ACTIONS = {"list", "create", "open", "task", "run", "stop", "find", "delete"}
+PROJECT_TIMEOUT = 150.0  # s: a clone or a dev server's first build
+# Projects "en la nube": apps/finnip-runner on the host, on a Unix socket shared through group 10000.
+RUNNER_SOCKET = os.environ.get("RUNNER_SOCKET", "/runner/runner.sock")  # s without a usable phrase before "aprende mi voz" gives up
 GENERIC_ERROR = "No pude completar la respuesta."
 # ponytail: live partials re-transcribe the whole utterance each time (O(n²) CPU on long phrases);
 # switch to a streaming STT if phrases get long or the CPU saturates.
@@ -67,8 +84,15 @@ class TailscaleOnly(BaseHTTPMiddleware):
 class Session:
     """One client connection: buffers PCM, runs one reply turn at a time, handles interruptions."""
 
-    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None, router=None):
+    def __init__(self, ws, stt, hermes, tts, recent=None, stats=None, theme=None, calendar=None, router=None,
+                 voice=None):
         self.ws, self.stt, self.hermes, self.tts = ws, stt, hermes, tts
+        self.projects = {}        # shared by create_app: project request id -> future for the Mac's answer
+        self.on_project_done = None  # set by create_app: async (data) -> Finnip tells what Claude Code did
+        self.last_voice = {}      # shared by create_app: {"session": the last one the user spoke to}
+        self.routines = None      # Routines-like (find(), run()): the panel's routines, answered here
+        self.voice = voice        # Voiceprint-like (enrolled, threshold, embed(), score(), save()), or None
+        self.enroll = None        # "aprende mi voz" in progress: {"embeddings": [...], "at": monotonic}
         self.stats = stats        # async () -> host numbers, or None
         self.calendar = calendar  # ICloudCalendar-like (async events()), or None
         self.router = router      # ModelRouter-like (route(), order(), async apply()), or None
@@ -102,11 +126,16 @@ class Session:
         """Finnip speaks first (printer notices). Skipped while a reply is running: Telegram has it."""
         if self.turn and not self.turn.done():
             return
-        audio = await self.tts.synthesize(text)
+        try:
+            audio = await self.tts.synthesize(text)
+        except Exception:
+            log.exception("announce TTS failed: %r", text)  # the text still reaches the screen
+            audio = None
         self.sentences = [text]  # so its own voice through the mic is recognized as echo
         await self.send({"type": "announce", "text": text})
         await self.send({"type": "reply_text", "seq": 0, "text": text})
-        await self.send({"type": "audio", "seq": 0, "format": "mp3"}, audio)
+        if audio:
+            await self.send({"type": "audio", "seq": 0, "format": "mp3"}, audio)
         await self.send({"type": "done"})
 
     async def run(self):
@@ -166,15 +195,26 @@ class Session:
         kind = data.get("type")
         if kind == "hello":
             self.desktop = data.get("client") == "desktop"
+            log.warning("hello from %s", data.get("client"))
             self.hello_at = time.monotonic()
             await self.send({"type": "ready", "version": 1})
             if self.theme.get("rgb"):
                 await self.send({"type": "theme", "rgb": self.theme["rgb"]})
             if (self.theme.get("playing") or {}).get("active"):
                 await self.send(self.theme["playing"])
+        elif kind == "battery":  # the Android app's battery is low (10 %, then 5 %) and not charging
+            level = data.get("level")
+            if type(level) is int and 0 <= level <= 100:
+                await self.announce(f"Me queda {level} % de pila, señor. Póngame a cargar, por favor.")
         elif kind == "part_open":
             if self.desktop:
                 self.part["open"] = bool(data.get("open"))
+        elif kind == "project_result":
+            future = self.projects.get(data.get("id"))
+            if future and not future.done():
+                future.set_result(data)
+        elif kind == "project_done" and self.desktop and self.on_project_done:
+            asyncio.create_task(self.on_project_done(data))
         elif kind == "photo":
             future = self.photos.get(data.get("id"))
             if future and not future.done():
@@ -217,6 +257,11 @@ class Session:
             await self.send({"type": "error", "message": "No pude entender el audio."})
             await self.send({"type": "done"})  # without it the UI stays in "thinking"
             return
+        if self.enroll is not None:
+            if time.monotonic() - self.enroll["at"] < ENROLL_TIMEOUT:
+                return await self.enroll_step(audio, transcript, data)
+            self.enroll = None
+            await self.send({"type": "enroll", "done": True})
         if data.get("wake"):  # standby, or a barge-in while it speaks: only a phrase with "Finnip" counts
             if data.get("barge_in"):
                 # The mic hears the user mixed with Finnip's own voice from the speakers: only the words it
@@ -250,6 +295,11 @@ class Session:
             if not rest:
                 return
             transcript = rest
+        if self.voice and T.wants_enroll(transcript):
+            return await self.start_enroll(transcript)
+        if transcript and not await self.is_users_voice(audio, transcript):
+            await self.send({"type": "transcript", "text": ""})
+            return
         barge_in = bool(data.get("barge_in"))
         if barge_in and T.is_echo(transcript, self.sentences):
             await self.send({"type": "resume"})
@@ -283,6 +333,69 @@ class Session:
         self.user_text, self.user_at = transcript, now
         self.turn = asyncio.create_task(self.reply(transcript))
 
+    async def is_users_voice(self, audio, transcript):
+        """True unless a voiceprint exists and this phrase is someone else's (Alexa, the TV)."""
+        if not self.voice or not self.voice.enrolled:
+            return True
+        embedding = await self.voice.embed(audio)
+        if embedding is None:  # too short to tell
+            return True
+        score = self.voice.score(embedding)
+        ok = score >= self.voice.threshold
+        # ponytail: every checked phrase is logged to tune VOICE_MATCH; keep only rejections once it is set.
+        log.warning("voice %.2f %s: %r", score, "user" if ok else "NOT the user, ignored", transcript[:60])
+        return ok
+
+    async def start_enroll(self, transcript):
+        """ "Finnip, aprende mi voz": the phrases to read show up one at a time on this device."""
+        self.enroll = {"embeddings": [], "at": time.monotonic()}
+        await self.send({"type": "transcript", "text": transcript})
+        await self.send_enroll_phrase()
+        await self.announce("Lea en voz alta cada frase de la pantalla, señor.")
+
+    async def send_enroll_phrase(self):
+        step = len(self.enroll["embeddings"])
+        await self.send({"type": "enroll", "step": step + 1, "total": len(ENROLL_PHRASES),
+                         "text": ENROLL_PHRASES[step]})
+
+    async def enroll_step(self, audio, transcript, data):
+        """One phrase read aloud: its embedding, then the next phrase or the saved voiceprint."""
+        await self.send({"type": "transcript", "text": ""})  # the UI goes back to listening
+        if T.is_cancel(transcript):
+            self.enroll = None
+            await self.send({"type": "enroll", "done": True})
+            await self.announce("Cancelado, señor.")
+            return
+        # Over Finnip's own voice, or noise and half phrases: the same phrase stays on screen.
+        embedding = None if data.get("barge_in") or not transcript else await self.voice.embed(audio)
+        if embedding is None:
+            return
+        self.enroll["embeddings"].append(embedding)
+        self.enroll["at"] = time.monotonic()
+        if len(self.enroll["embeddings"]) < len(ENROLL_PHRASES):
+            return await self.send_enroll_phrase()
+        self.voice.save(self.enroll["embeddings"])
+        self.enroll = None
+        await self.send({"type": "enroll", "done": True})
+        await self.announce("Listo, señor. Ya reconozco su voz.")
+
+    async def routine_reply(self, user_text):
+        """A routine from the panel: its actions run here and its reply is said word for word, no model."""
+        if not self.routines:
+            return None
+        try:
+            item = await self.routines.find(user_text)
+            if item is None:
+                return None
+            reply, failed = await self.routines.run(item)
+        except Exception:
+            log.exception("routine failed")
+            return None  # Hermes still has the routine in its fast path
+        if failed:
+            log.warning("routine %r: %s", item.get("phrase"), "; ".join(failed))
+            reply += f" Ojo: {len(failed)} {'acción falló' if len(failed) == 1 else 'acciones fallaron'}."
+        return reply
+
     async def model_command(self, user_text):
         """The spoken answer to "usa Opus" / "el normal sea DeepSeek", or None when it is not one."""
         order = self.router.order(user_text) if self.router else None
@@ -291,23 +404,37 @@ class Session:
         message, _ = await self.router.apply(order)
         return message
 
-    async def reply(self, user_text):
-        local = await self.model_command(user_text)  # answered here, without Hermes
+    async def show_panel(self, event):
+        """Server stats and the agenda: on the Mac when one is connected and another device asked
+        (the phone answers by voice), else on the device that asked."""
+        sent = 0 if self.desktop or not self.to_desktops else await self.to_desktops(event)
+        log.warning("panel %s from %s: %s", event["type"], "desktop" if self.desktop else "other device",
+                 f"{sent} desktop app(s)" if sent else "same device")
+        if not sent:
+            await self.send(event)
+
+    async def reply(self, user_text, notice=False):
+        """notice: not the user's words but news for Finnip to tell (a finished Claude Code task)."""
+        if not notice:
+            self.last_voice["session"] = self
+        local = None if notice else await self.model_command(user_text)  # answered here, without Hermes
+        if local is None and not notice:
+            local = await self.routine_reply(user_text)
         prompt = T.with_heard_note(user_text, self.pending_heard)
         self.pending_heard, self.sentences, self.spoke = None, [], False
-        if self.stats and T.wants_stats(user_text):
+        if self.stats and not notice and T.wants_stats(user_text):
             try:
                 stats = await self.stats()
-                await self.send({"type": "stats", **stats})
+                await self.show_panel({"type": "stats", **stats})
                 prompt = T.stats_note(stats, prompt)
             except Exception:
                 log.exception("host stats failed")  # Finnip can still measure them with its tools
-        if self.calendar and T.wants_reminders(user_text):
+        if self.calendar and not notice and T.wants_reminders(user_text):
             try:
                 label, start, end = T.agenda_range(user_text)
                 items = T.calendar_items(await self.calendar.events(start, end))
                 # On screen before the voice arrives.
-                await self.send({"type": "reminders", "title": label, "items": items})
+                await self.show_panel({"type": "reminders", "title": label, "items": items})
                 prompt = T.reminders_note(items, prompt, label)
             except Exception:
                 log.exception("calendar failed")  # Finnip can still list them with its tools
@@ -361,8 +488,47 @@ THEME_POLL = 1.0  # seconds between reads of the devices: monitor color + action
 PRINTER_POLL = 3.0  # seconds between printer checks (OctoPrint on the Compose network)
 
 
+def clean_routines(body):
+    """The panel's routines, checked: [{"phrase", "reply", "music", "mode"}]; ValueError says what is wrong."""
+    items = body.get("routines") if isinstance(body, dict) else None
+    if not isinstance(items, list) or len(items) > MAX_ROUTINES:
+        raise ValueError(f"Hasta {MAX_ROUTINES} rutinas")
+    routines = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Rutina inválida")
+        routine = {key: str(item.get(key) or "").strip()[:size] for key, size in ROUTINE_FIELDS.items()}
+        if len(routine["phrase"]) < 3:
+            raise ValueError("Cada rutina necesita la frase que la activa")
+        steps = item.get("steps") or []
+        if not isinstance(steps, list) or len(steps) > MAX_STEPS:
+            raise ValueError(f"Hasta {MAX_STEPS} acciones por rutina")
+        routine["steps"] = []
+        for step in steps:
+            device, action = (step.get("device"), step.get("action")) if isinstance(step, dict) else (None, None)
+            params = step.get("params") or {} if isinstance(step, dict) else None
+            if (not isinstance(device, str) or not re.fullmatch(r"[a-z_]+\.[a-z0-9_]{1,80}", device)
+                    or action not in STEP_ACTIONS or not isinstance(params, dict) or len(json.dumps(params)) > 300):
+                raise ValueError("Acción inválida en la rutina")
+            routine["steps"].append({"device": device, "action": action, "params": params})
+        routines.append(routine)
+    return routines
+
+
+async def http_bridge(method, path, body=None):
+    """Home Bridge with the gateway's key -> (status, JSON)."""
+    url = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstrip("/") + path
+    async with httpx.AsyncClient(timeout=30) as http:
+        resp = await http.request(method, url, json=body,
+                                  headers={"Authorization": f"Bearer {os.environ['BRIDGE_API_KEY']}"})
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return 502, {"error": "Home Bridge respondió algo inesperado"}
+
+
 def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calendar=None, router=None,
-               printer=None, notify=None, parts=None):
+               printer=None, notify=None, parts=None, voice=None, bridge=None, routines=None):
     if stt is None:
         from .services import (EdgeTts, HermesClient, ICloudCalendar, ModelRouter, MonitorLight, ParakeetStt,
                                PartsClient, Printer, host_stats, telegram)
@@ -379,6 +545,13 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         printer = Printer(printer_plugin) if os.path.exists(printer_plugin) and os.environ.get("OCTOPRINT_API_KEY") else None
         notify = telegram if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID") else None
         parts = PartsClient() if os.environ.get("PARTS_API_KEY") else None
+        if os.path.exists(os.environ.get("ROUTINES_PLUGIN", "")) and os.environ.get("BRIDGE_API_KEY"):
+            from .services import Routines
+            routines = Routines(os.environ["ROUTINES_PLUGIN"])
+        if os.path.exists(os.environ.get("VOICE_MODEL", "")) and os.environ.get("VOICEPRINT"):
+            from .voiceprint import Voiceprint
+            voice = Voiceprint(os.environ["VOICE_MODEL"], os.environ["VOICEPRINT"],
+                               float(os.environ.get("VOICE_MATCH", "0.4")))
 
     recent = {"text": "", "at": 0.0}
     theme = {}        # "rgb": last color the monitors had while on; "playing": the speaker's now-playing event
@@ -435,10 +608,14 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             await ws.close(code=4403)  # before accept: the handshake gets HTTP 403
             return
         await ws.accept()
-        session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router)
+        session = Session(ws, stt, hermes, tts, recent, stats, theme, calendar, router, voice)
         session.photos = photos
         session.part = part
         session.to_desktops = to_desktops
+        session.routines = routines
+        session.projects = projects
+        session.last_voice = last_voice
+        session.on_project_done = project_done
         sessions.add(session)
         try:
             await session.run()
@@ -454,9 +631,12 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
         return len(key) >= 32 and hmac.compare_digest(given.encode(), f"Bearer {key}".encode())
 
     async def to_desktops(event):
-        for session in desktops():
+        """Sends to every desktop app; how many there were."""
+        targets = desktops()
+        for session in targets:
             with contextlib.suppress(Exception):
                 await session.send(event)
+        return len(targets)
 
     def desktops():
         """Connected desktop apps, the most recent first (a reopened app may leave an old socket behind)."""
@@ -518,7 +698,123 @@ def create_app(stt=None, hermes=None, tts=None, stats=None, monitor=None, calend
             return JSONResponse({"error": "La foto llegó dañada"}, status_code=502)
         return Response(jpeg, media_type="image/jpeg")
 
+    if bridge is None and os.environ.get("BRIDGE_API_KEY"):
+        bridge = http_bridge
+
+    async def routines_api(request):
+        if request.method == "GET":
+            try:
+                with open(ROUTINES_FILE) as f:
+                    return JSONResponse({"routines": clean_routines(json.load(f))})
+            except (OSError, ValueError):
+                return JSONResponse({"routines": []})
+        if not request.headers.get("content-type", "").startswith("application/json"):
+            return JSONResponse({"error": "Se espera JSON"}, status_code=415)
+        try:
+            routines = clean_routines(await request.json())
+        except ValueError as error:
+            return JSONResponse({"error": str(error) or "Rutinas inválidas"}, status_code=400)
+        tmp = ROUTINES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"routines": routines}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, ROUTINES_FILE)  # atomic: the plugin never reads half a file
+        return JSONResponse({"routines": routines})
+
+    async def bridge_api(request):
+        """The panel's part of Home Bridge: devices to pick from, and modes to list, edit and delete."""
+        if bridge is None:
+            return JSONResponse({"error": "Home Bridge no está configurado"}, status_code=503)
+        slug = request.path_params.get("slug")
+        if slug is not None and not MODE_SLUG.match(slug):
+            return JSONResponse({"error": "Nombre de modo inválido"}, status_code=400)
+        body = None
+        if request.method == "PUT":
+            if not request.headers.get("content-type", "").startswith("application/json"):
+                return JSONResponse({"error": "Se espera JSON"}, status_code=415)
+            body = await request.json()
+        try:
+            status, data = await bridge(request.method, request.url.path.removeprefix("/api"), body)
+        except Exception:
+            log.exception("panel: Home Bridge")
+            return JSONResponse({"error": "No pude hablar con Home Bridge"}, status_code=502)
+        return JSONResponse(data, status_code=status)
+
+    projects = {}       # project request id -> future, answered by the desktop app's "project_result"
+    last_voice = {}     # {"session": the device the user last spoke to}
+
+    async def project_request(request):
+        """Hermes (finnip_projects): an action on a project on the user's Mac, through the desktop app."""
+        if not internal_allowed(request):
+            return JSONResponse({"error": "No autorizado"}, status_code=401)
+        body = await request.json()
+        if not isinstance(body, dict) or body.get("action") not in PROJECT_ACTIONS:
+            return JSONResponse({"error": "Acción de proyecto inválida"}, status_code=400)
+        fields = {k: body[k] for k in ("action", "name", "repo", "request", "confirmed", "where", "path") if k in body}
+        if body.get("where") == "cloud" and body["action"] != "open":  # opening is Zed on the Mac, over SSH
+            try:
+                async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=RUNNER_SOCKET),
+                                             timeout=PROJECT_TIMEOUT) as http:
+                    resp = await http.post("http://runner/project", json=fields)
+                return JSONResponse(resp.json(), status_code=200 if resp.status_code == 200 else 422)
+            except (httpx.HTTPError, ValueError):
+                log.exception("finnip-runner")
+                return JSONResponse({"error": "El servidor de proyectos en la nube no responde"}, status_code=502)
+        targets = desktops()
+        if not targets:
+            return JSONResponse({"error": "La app de escritorio no está abierta en la Mac"}, status_code=409)
+        request_id = uuid.uuid4().hex
+        projects[request_id] = asyncio.get_running_loop().create_future()
+        try:
+            await targets[0].send({"type": "project_request", "id": request_id, **fields})
+            reply = await asyncio.wait_for(projects[request_id], PROJECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            return JSONResponse({"error": "La Mac no respondió a tiempo"}, status_code=504)
+        finally:
+            projects.pop(request_id, None)
+        if reply.get("error"):
+            return JSONResponse({"error": str(reply["error"])[:400]}, status_code=422)
+        return JSONResponse(reply.get("result") or {})
+
+    async def project_done(data):
+        """Claude Code finished on the Mac: Finnip tells the user, on the device they last spoke to."""
+        name = str(data.get("name") or "")[:60]
+        result = str(data.get("result") or "")[:2000]
+        pending = [str(c)[:200] for c in (data.get("pending") or [])][:10]
+        note = (f"[Claude Code terminó la tarea en el proyecto {name}{' con un error' if data.get('error') else ''}. "
+                f"Su respuesta: {result}]")
+        where = "cloud" if data.get("where") == "cloud" else "local"
+        if pending:
+            note += (f" [Pide confirmación del usuario antes de: {'; '.join(pending)}. Pregúntale en una frase si lo "
+                     "autoriza; con un sí explícito, llama finnip_projects task con el mismo proyecto, where "
+                     f"'{where}', confirmed true y request 'Confirmado: ' más lo que autorizó.]")
+        note += " Cuéntaselo al usuario en una o dos frases, sin código."
+        session = last_voice.get("session")
+        if session not in sessions:
+            if notify:
+                with contextlib.suppress(Exception):
+                    await notify(f"Claude Code terminó en {name}: {result[:600]}")
+            return
+        while session.turn and not session.turn.done():  # the user is talking to Finnip: after that
+            await asyncio.sleep(1)
+        await session.send({"type": "announce", "text": ""})  # the page plays it without a pending reply
+        session.turn = asyncio.create_task(session.reply(note, notice=True))
+
+    async def project_finished(request):
+        """finnip-runner (projects in the cloud): a Claude Code task finished on the server."""
+        if not internal_allowed(request):
+            return JSONResponse({"error": "No autorizado"}, status_code=401)
+        body = await request.json()
+        if isinstance(body, dict):
+            asyncio.create_task(project_done({**body, "where": "cloud"}))
+        return JSONResponse({"ok": True})
+
     routes = [Route("/health", health), WebSocketRoute("/ws", ws_endpoint),
+              Route("/internal/project", project_request, methods=["POST"]),
+              Route("/internal/project_done", project_finished, methods=["POST"]),
+              Route("/api/routines", routines_api, methods=["GET", "PUT"]),
+              Route("/api/devices", bridge_api, methods=["GET"]),
+              Route("/api/modes", bridge_api, methods=["GET"]),
+              Route("/api/modes/{slug}", bridge_api, methods=["GET", "PUT", "DELETE"]),
               Route("/internal/part", show_part, methods=["POST"]),
               Route("/internal/photo", take_photo, methods=["POST"]),
               Route("/parts/{slug}/v{version:int}.stl", part_stl)]

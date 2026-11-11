@@ -22,6 +22,14 @@ http://app.finnip, http://finnip {
 	redir https://{$FINNIP_TS_NAME}{uri}
 }
 
+# The panel (modes and routines) lives on the app: same tailnet identity check.
+http://panel.finnip {
+	redir https://{$FINNIP_TS_NAME}/panel.html
+}
+
+# Previews of projects running in the cloud, http://<project>.dev.finnip: apps/finnip-runner adds and
+# removes their routes at run time through the admin API (localhost:2019).
+
 http://home.finnip {
 	reverse_proxy 127.0.0.1:8123
 }

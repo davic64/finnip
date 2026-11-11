@@ -6,6 +6,9 @@
   <string>Finnip te escucha para atender lo que le pides.</string>
   <key>NSCameraUsageDescription</key>
   <string>Finnip sigue tus manos para girar y acercar las piezas 3D. Solo con una pieza abierta; el video no sale de tu Mac.</string>
+  <!-- With listening off nothing keeps it active: App Nap would freeze the overlay page (music notice, panels). -->
+  <key>NSAppSleepDisabled</key>
+  <true/>
   <key>LSUIElement</key>
   <true/>
 </dict>

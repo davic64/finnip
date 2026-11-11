@@ -17,7 +17,10 @@ export class Mic {
   private stream: MediaStream | null = null;
   /** voiceProcessing false (desktop app, mic always open): on macOS echo cancellation turns on the system's
    *  voice processing, which ducks every other app's audio while the mic is open (videos sounded quiet). */
-  constructor(private voiceProcessing = true) {}
+  /** farField (Android app across the room): no echo cancellation or noise suppression, which on Android
+   *  use the phone-call input tuned for a mouth a few cm away; gain control on; a more sensitive VAD.
+   *  The page already mutes the mic while Finnip speaks, so there is no echo to cancel. */
+  constructor(private voiceProcessing = true, private farField = false) {}
 
   get isOpen() {
     return this.vad !== null;
@@ -29,9 +32,9 @@ export class Mic {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        echoCancellation: this.voiceProcessing,
-        noiseSuppression: this.voiceProcessing,
-        autoGainControl: this.voiceProcessing,
+        echoCancellation: this.voiceProcessing && !this.farField,
+        noiseSuppression: this.voiceProcessing && !this.farField,
+        autoGainControl: this.voiceProcessing || this.farField,
       },
     });
     onPermission();
@@ -40,8 +43,8 @@ export class Mic {
       model: "v5",
       baseAssetPath: "/vad/",
       onnxWASMBasePath: "/vad/",
-      positiveSpeechThreshold: 0.5, // 0.6 missed a soft "Finnip"; the server filters the extra noise
-      negativeSpeechThreshold: 0.35,
+      positiveSpeechThreshold: this.farField ? 0.4 : 0.5, // 0.6 missed a soft "Finnip"; the server filters the extra noise
+      negativeSpeechThreshold: this.farField ? 0.3 : 0.35,
       redemptionMs: 600, // silence that ends a phrase: lower = faster turns, higher = fewer cut-offs
       minSpeechMs: 250,
       preSpeechPadMs: 300,

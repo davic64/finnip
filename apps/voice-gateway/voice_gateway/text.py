@@ -231,7 +231,8 @@ def is_stop(text):
 WAKE_WORD = "finip"  # as _sound() writes "Finnip"
 WAKE_LEADS = {"oye", "hey", "ey", "ok", "okay"}
 # How Parakeet writes the user's "Finnip" (logged 2026-11-09): "Finip", and "Philip" when said alone.
-WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini"}  # after _sound()
+# 2026-11-10, from the phone across the room: "Fine.", "Fanny." ("fany").
+WAKE_VARIANTS = {"filip", "felip", "finip", "finy", "fini", "fine", "fany", "fani"}  # after _sound()
 WAKE_TOKEN = re.compile(r"[^\s,.;:¿?¡!]+")
 
 
@@ -262,3 +263,18 @@ def after_wake_word(text, anywhere=False):
         if i >= 1 or (word not in WAKE_LEADS and len(word) > 3):
             return None
     return None
+
+
+ENROLL = re.compile(r"\b(aprende|aprender|registra|graba|reconoce|reconocer)( a reconocer)? (mi|a mi) voz\b")
+CANCEL_WORDS = {"cancela", "cancelar", "cancelalo", "olvidalo", "detente"}
+
+
+def wants_enroll(text):
+    """ "Aprende mi voz", "aprende a reconocer mi voz", "registra mi voz"."""
+    return bool(ENROLL.search(_norm(text)))
+
+
+def is_cancel(text):
+    words = _norm(text).split()
+    return 0 < len(words) <= 3 and words[0] in CANCEL_WORDS
+
