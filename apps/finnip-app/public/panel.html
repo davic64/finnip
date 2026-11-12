@@ -77,6 +77,7 @@
         on: "Encender", off: "Apagar", brightness: "Brillo", color: "Color", color_temp: "Luz blanca (temperatura)",
         volume: "Volumen", pause: "Pausar", resume: "Reanudar", open: "Abrir", close: "Cerrar", stop: "Detener",
         position: "Posición", temperature: "Temperatura", hvac_mode: "Modo del clima",
+        option: "Elegir", value: "Ajustar",
       };
       const $ = (sel, root = document) => root.querySelector(sel);
       const el = (tag, props = {}, ...kids) => {
@@ -101,6 +102,45 @@
 
       let devices = [];
       let modes = [];
+      // Music is the text Finnip says to Alexa ("reproduce <text> en Apple Music"). "la estación de X" is
+      // Apple Music's radio for X: that song or artist plus similar ones.
+      const SIMILAR = "la estación de ";
+      const KINDS = { song: ["Canción", "la canción "], artist: ["Artista", ""], playlist: ["Playlist", "la playlist "] };
+      function parseMusic(text) {
+        let rest = text || "";
+        const similar = rest.startsWith(SIMILAR);
+        if (similar) rest = rest.slice(SIMILAR.length);
+        const kind = ["song", "playlist"].find((k) => rest.startsWith(KINDS[k][1])) || "artist";
+        return { kind, name: rest.slice(KINDS[kind][1].length), similar };
+      }
+      const musicText = ({ kind, name, similar }) =>
+        name.trim() ? `${similar && kind !== "playlist" ? SIMILAR : ""}${KINDS[kind][1]}${name.trim()}` : "";
+      /** Music picker. value: true (Finnip picks, only if auto), false/"" (none) or Alexa text; onChange gets the same. */
+      function musicPicker(value, onChange, auto) {
+        const choice = el("select", {},
+          ...(auto ? [el("option", { value: "auto", textContent: "Finnip la elige" })] : []),
+          el("option", { value: "none", textContent: "Sin música" }),
+          el("option", { value: "pick", textContent: "Yo la elijo" }));
+        choice.value = typeof value === "string" && value ? "pick" : value === true && auto ? "auto" : "none";
+        const m = parseMusic(typeof value === "string" ? value : "");
+        const kind = el("select", {}, ...Object.entries(KINDS).map(([k, [label]]) => el("option", { value: k, textContent: label })));
+        kind.value = m.kind;
+        const name = el("input", { type: "text", value: m.name, maxLength: 100, placeholder: "Coldplay" });
+        const similar = el("input", { type: "checkbox", checked: m.similar });
+        const similarRow = el("label", { className: "row" }, similar, "y artistas similares");
+        const picked = el("div", { className: "fields wide" },
+          el("label", {}, "Qué es", kind), el("label", {}, "Nombre", name), similarRow);
+        const sync = () => {
+          picked.hidden = choice.value !== "pick";
+          similarRow.hidden = kind.value === "playlist";
+          name.placeholder = { song: "Yellow de Coldplay", artist: "Coldplay", playlist: "80s Hard Rock Essentials" }[kind.value];
+          onChange(choice.value === "auto" ? true : choice.value === "none" ? (auto ? false : "")
+            : musicText({ kind: kind.value, name: name.value, similar: similar.checked }) || (auto ? true : ""));
+        };
+        choice.onchange = kind.onchange = similar.onchange = name.oninput = sync;
+        sync();
+        return [el("label", {}, "Música en Alexa", choice), picked];
+      }
 
       $("#back").onclick = () => (history.length > 1 ? history.back() : (location.href = "/"));
       document.querySelectorAll("[data-tab]").forEach((tab) =>
@@ -151,6 +191,21 @@
           p.position ??= 100;
           box.append(rangeField("Posición", p.position, 0, 100, " %", (v) => (p.position = v)));
         }
+        if (step.action === "option") {
+          const options = device?.options || [];
+          if (!options.includes(p.option)) p.option = options[0];
+          // "mic_spectrum" -> "spectrum"
+          const pick = el("select", {}, ...options.map((o) => el("option", { value: o, textContent: o.replace(/^mic_/, "").replace(/_/g, " ") })));
+          pick.value = p.option;
+          pick.onchange = () => (p.option = pick.value);
+          box.append(el("label", {}, "Opción", pick));
+        }
+        if (step.action === "value") {
+          const min = device?.min ?? 0;
+          const max = device?.max ?? 100;
+          p.value ??= Math.round((min + max) / 2);
+          box.append(rangeField("Valor", p.value, min, max, "", (v) => (p.value = v)));
+        }
         if (step.action === "temperature") {
           p.temperature ??= 22;
           box.append(rangeField("Temperatura", p.temperature, 16, 30, " °C", (v) => (p.temperature = v)));
@@ -186,7 +241,6 @@
         const root = $("#modes");
         const msg = el("p", { className: "msg" });
         const name = el("input", { type: "text", value: draft.name, placeholder: "Modo cine", maxLength: 60 });
-        const music = el("input", { type: "checkbox", checked: draft.music });
         const stepsBox = el("div");
         const redraw = () => stepsBox.replaceChildren(...draft.steps.map((s) => stepEditor(s, draft.steps, redraw)));
         const add = el("button", { textContent: "+ Agregar paso", type: "button" });
@@ -204,7 +258,7 @@
           msg.className = "msg";
           msg.textContent = "Guardando…";
           try {
-            await api("PUT", `modes/${slug}`, { name: name.value.trim() || undefined, music: music.checked, steps: draft.steps });
+            await api("PUT", `modes/${slug}`, { name: name.value.trim() || undefined, music: draft.music, steps: draft.steps });
             await showModes();
           } catch (err) {
             msg.className = "msg error";
@@ -218,7 +272,7 @@
           el("h2", { textContent: mode ? `Editar ${mode.name}` : "Modo nuevo" }),
           el("div", { className: "fields", style: "margin-top:12px" },
             el("label", {}, "Nombre", name),
-            el("label", { className: "row", style: "align-self:end" }, music, "Finnip elige música al activarlo")),
+            ...musicPicker(draft.music, (v) => (draft.music = v), true)),
           stepsBox,
           el("div", { className: "row", style: "margin-top:14px" }, add, el("span", { className: "grow" }), cancel, save),
           msg));
@@ -248,7 +302,7 @@
           };
           return el("div", { className: "card" },
             el("div", { className: "grow" }, el("h2", { textContent: mode.name }),
-              el("span", { className: "tag", textContent: `${mode.steps?.length ?? "?"} pasos · ${mode.music ? "con música" : "sin música"}` })),
+              el("span", { className: "tag", textContent: `${mode.steps?.length ?? "?"} pasos · ${typeof mode.music === "string" ? `música: ${mode.music}` : mode.music ? "con música" : "sin música"}` })),
             edit, del);
         }));
         root.replaceChildren(el("div", { className: "row", style: "margin-bottom:12px" },
@@ -298,7 +352,7 @@
           return el("div", { className: "card" }, el("div", { className: "fields" },
             field("phrase", "Cuando diga «Finnip, …»", { placeholder: "despierta, ya llegó papá", maxLength: 80, wide: true }),
             field("reply", "Finnip responde exactamente", { tag: "textarea", placeholder: "Bienvenido a casa, señor.", maxLength: 300, wide: true }),
-            field("music", "Música en Alexa (opcional)", { placeholder: "la playlist 80s Hard Rock Essentials", maxLength: 120 }),
+            ...musicPicker(r.music, (v) => (r.music = v), false),
             el("label", {}, "Activa el modo (opcional)", mode)),
             el("p", { className: "tag", style: "margin:16px 0 0", textContent: "Acciones (opcional)" }),
             steps,

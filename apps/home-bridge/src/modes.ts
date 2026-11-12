@@ -6,7 +6,7 @@ import type { Device } from "./devices.js";
 // Alexa), no run (modes do not nest).
 export const MODE_ACTIONS = [
     "on", "off", "brightness", "color", "color_temp", "open", "close", "stop", "position",
-    "temperature", "hvac_mode", "pause", "resume", "volume",
+    "temperature", "hvac_mode", "pause", "resume", "volume", "option", "value",
 ] as const;
 export type ModeAction = (typeof MODE_ACTIONS)[number];
 export type Step = { device: string; action: ModeAction; params: Record<string, unknown> };
@@ -14,9 +14,19 @@ export type HaStep = Record<string, unknown>;
 
 export const SLUG = /^[a-z0-9_]{1,40}$/;
 export const scriptId = (slug: string) => `modo_${slug}`;
-// Whether the mode gets music picked by Finnip, readable in Home Assistant as the script's description.
+// The mode's music, readable in Home Assistant as the script's description: Finnip picks it (true), none
+// (false), or this exact query for Alexa ("la playlist 80s Hard Rock", "la estación de Coldplay").
 export const MUSIC_ON = "Finnip: con música";
 export const MUSIC_OFF = "Finnip: sin música";
+const MUSIC_QUERY = "Finnip: música: ";
+export type Music = boolean | string;
+export function musicOf(description: string | undefined): Music {
+    const text = description?.trim() ?? "";
+    if (text === MUSIC_OFF) return false;
+    return text.startsWith(MUSIC_QUERY) ? text.slice(MUSIC_QUERY.length).trim() || true : true;
+}
+export const describeMusic = (music: Music) =>
+    typeof music === "string" ? MUSIC_QUERY + music : music ? MUSIC_ON : MUSIC_OFF;
 
 const isModeAction = (name: string): name is ModeAction => (MODE_ACTIONS as readonly string[]).includes(name);
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -40,7 +50,7 @@ function guessInput(data: Record<string, unknown>): Record<string, unknown> {
     if ("rgb_color" in data) input.rgb = data.rgb_color;
     if ("color_temp_kelvin" in data) input.kelvin = data.color_temp_kelvin;
     if (typeof data.volume_level === "number") input.volume = Math.round(data.volume_level * 100);
-    for (const key of ["position", "temperature", "hvac_mode"]) if (key in data) input[key] = data[key];
+    for (const key of ["position", "temperature", "hvac_mode", "option", "value"]) if (key in data) input[key] = data[key];
     return input;
 }
 
@@ -66,7 +76,7 @@ export function fromHa(step: HaStep): Step | undefined {
     return undefined;
 }
 
-export type Mode = { slug: string; name: string; music: boolean; editable: boolean; steps: Step[] | null };
+export type Mode = { slug: string; name: string; music: Music; editable: boolean; steps: Step[] | null };
 
 export function readMode(slug: string, config: { alias?: string; description?: string; sequence: HaStep[] }): Mode {
     const steps = config.sequence.map(fromHa);
@@ -74,7 +84,7 @@ export function readMode(slug: string, config: { alias?: string; description?: s
     return {
         slug,
         name: config.alias ?? `Modo ${slug.replace(/_/g, " ")}`,
-        music: config.description?.trim() !== MUSIC_OFF,
+        music: musicOf(config.description),
         editable,
         steps: editable ? (steps as Step[]) : null,
     };

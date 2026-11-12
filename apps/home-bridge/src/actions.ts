@@ -117,6 +117,27 @@ export const ACTIONS = {
         data: (input) => ({ volume_level: input.volume / 100 }),
         confirm: (input, actual) => actual.volume === input.volume,
     }),
+    // A select's choice, e.g. the LED strip's audio effect ("mic_rhythm").
+    option: define({
+        input: z.object({ option: z.string().min(1).max(100) }),
+        service: "select_option",
+        data: (input) => ({ option: input.option }),
+        check: (input, device) => device.options?.includes(input.option) ? undefined : "Unsupported option",
+        confirm: (input, actual) => actual.state === input.option,
+    }),
+    // A number setting, e.g. the LED strip's microphone sensitivity.
+    value: define({
+        input: z.object({ value: z.number() }),
+        service: "set_value",
+        data: (input) => ({ value: input.value }),
+        check: (input, device) => {
+            const { min, max } = device;
+            if ((min != null && input.value < min) || (max != null && input.value > max)) {
+                return `Value must be between ${min} and ${max}`;
+            }
+        },
+        confirm: (input, actual) => Number(actual.state) === input.value,
+    }),
     hvac_mode: define({
         input: z.object({ hvac_mode: z.string().min(1) }),
         service: "set_hvac_mode",

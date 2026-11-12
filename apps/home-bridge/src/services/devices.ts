@@ -1,7 +1,7 @@
 import { findAction, type ActionName } from "../actions.js";
 import { DEVICE_LABEL, domainOf, toDevice, type Device, type Domain } from "../devices.js";
 import type { HomeAssistantService } from "./home-assistant.js";
-import { MUSIC_OFF } from "../modes.js";
+import { musicOf } from "../modes.js";
 
 // ponytail: no cache, every request asks HA for the label (one extra local call); cache if it ever gets slow.
 // Some devices (Alexa) report a new state a moment after the command: re-read until it matches,
@@ -22,7 +22,7 @@ export function createDevicesService(homeAssistant: HomeAssistantService, settle
     async function withMusic(device: Device): Promise<Device> {
         if (device.domain !== "script") return device;
         const config = await homeAssistant.getScriptConfig(device.id.slice("script.".length));
-        return { ...device, music: config?.description?.trim() !== MUSIC_OFF };
+        return { ...device, music: musicOf(config?.description) };
     }
 
     return {

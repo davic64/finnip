@@ -11,7 +11,7 @@ BRIDGE_URL = os.environ.get("FINNIP_BRIDGE_URL", "http://home-bridge:3000").rstr
 ACTIONS = (
     "list", "status", "on", "off", "brightness", "color", "color_temp",
     "open", "close", "stop", "position", "temperature", "hvac_mode",
-    "play", "command", "pause", "resume", "volume", "run",
+    "play", "command", "pause", "resume", "volume", "run", "option", "value",
     "discover", "expose", "hide", "modes", "mode", "save_mode", "delete_mode",
 )
 # Parameters each action forwards to Home Bridge, which validates them again.
@@ -25,6 +25,8 @@ ACTION_FIELDS = {
     "play": ("query",),
     "command": ("text",),
     "volume": ("volume",),
+    "option": ("option",),
+    "value": ("value",),
 }
 ENTITY_ID = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 
@@ -107,7 +109,8 @@ def mode_action(action, params):
         raise ValueError("Faltan los pasos del modo: lista de {device, action, params}")
     steps = [{"device": resolve_device(str(step.get("device") or "")), "action": step.get("action"),
               "params": step.get("params") or {}} for step in steps]
-    body = {"name": params["name"], "music": params.get("music", True), "steps": steps}
+    music = str(params.get("music_query") or "").strip() or params.get("music", True)
+    body = {"name": params["name"], "music": music, "steps": steps}
     return call_bridge("PUT", f"/modes/{slug}", body)
 
 
@@ -144,14 +147,16 @@ SCHEMA = {
         "playlist o género); command le dice a Alexa un texto como si el usuario se lo hablara, por ejemplo "
         "para crear un recordatorio o alarma en Alexa o hacerle una pregunta; pause, resume y volume (0-100). "
         "Alexa no permite compras desde Finnip. "
+        "Ajustes de un dispositivo: option elige una opción de un selector (por ejemplo el efecto de audio de "
+        "los leds, entre sus options) y value fija un número (por ejemplo la sensibilidad del micrófono). "
         "Los modos (por ejemplo 'Modo estudio', 'Modo cine') son scripts de Home Assistant: actívalos con run. "
         "Para actuar pasa directamente el nombre del dispositivo en device (por ejemplo 'lámpara'); "
         "no necesitas llamar list antes. Usa list solo para descubrir dispositivos o sus capabilities. "
         "Si el nombre no coincide o es ambiguo, el error incluye los dispositivos disponibles. "
         "Cada orden devuelve confirmed y actual con el estado que reporta Home Assistant. "
         "Gestión: discover lista los dispositivos de Home Assistant que Finnip aún no ve; expose agrega uno "
-        "y hide lo oculta (solo luces, enchufes, persianas, clima y bocinas; nunca cerraduras, alarmas ni cámaras). "
-        "Modos: modes los lista; mode lee uno por name; save_mode lo crea o reemplaza con name, music y steps "
+        "y hide lo oculta (solo luces, enchufes, persianas, clima, bocinas y ajustes; nunca cerraduras, alarmas ni cámaras). "
+        "Modos: modes los lista; mode lee uno por name; save_mode lo crea o reemplaza con name, music (o music_query) y steps "
         "(cada paso {device, action, params} con una acción de estado del dispositivo); delete_mode lo borra. "
         "Para cambiar un paso, lee el modo con mode, cambia ese paso y guarda todos los pasos. "
         "Un modo con editable false se editó a mano en Home Assistant: no lo sobrescribas. "
@@ -212,6 +217,14 @@ SCHEMA = {
                 "maxLength": 200,
                 "description": "Para command en Alexa: la frase en español tal como se la dirías a Alexa, sin decir 'Alexa'",
             },
+            "option": {
+                "type": "string",
+                "description": "Para option: una de las options del selector, por ejemplo 'mic_rhythm'",
+            },
+            "value": {
+                "type": "number",
+                "description": "Para value: el número, dentro del min y max del ajuste",
+            },
             "volume": {
                 "type": "integer",
                 "minimum": 0,
@@ -227,6 +240,12 @@ SCHEMA = {
             "music": {
                 "type": "boolean",
                 "description": "Para save_mode: si al activarlo Finnip pone música (por defecto true)",
+            },
+            "music_query": {
+                "type": "string",
+                "description": ("Para save_mode: música fija del modo, el texto exacto para Alexa, por ejemplo "
+                                "'la playlist Chill Vibes' o 'la estación de Coldplay' (ese artista y similares). "
+                                "Sin esto, Finnip la elige cada vez"),
             },
             "steps": {
                 "type": "array",
@@ -501,12 +520,29 @@ def mode_fast_path(user_message):
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté activar el {mode} antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
-    music = ("Este modo no lleva música: no reproduzcas nada." if scripts[name[0]].get("music") is False else
-             f"Ahora elige tú un artista o canción concreto que vaya con el {name[0]} y reprodúcelo con "
-             "finnip_lights play en la Echo (nunca reggaetón, banda ni cumbia).")
+    chosen = scripts[name[0]].get("music")
+    if isinstance(chosen, str):  # the user picked it in the panel: play exactly that, no model choice
+        music = play_chosen(chosen)
+    elif chosen is False:
+        music = "Este modo no lleva música: no reproduzcas nada."
+    else:
+        music = (f"Ahora elige tú un artista o canción concreto que vaya con el {name[0]} y reprodúcelo con "
+                 "finnip_lights play en la Echo (nunca reggaetón, banda ni cumbia).")
     return {"context": (
         f"[finnip fast path] El {name[0]} YA se activó antes de tu turno (luces y volumen): "
         f"{json.dumps(result, ensure_ascii=False)}. {music} Luego confirma al usuario en una frase corta.")}
+
+
+def play_chosen(query):
+    """Plays the mode's chosen music on the first speaker -> what to tell the model about it."""
+    try:
+        speakers = [d for d in call_bridge("GET", "/devices").get("devices", []) if d.get("domain") == "media_player"]
+        if not speakers:
+            return f"Este modo pide «{query}» pero no hay bocina: díselo al usuario."
+        call_bridge("POST", f"/devices/{speakers[0]['id']}/play", {"query": query})
+    except Exception as error:
+        return f"Intenté poner «{query}» y falló: {error}. Díselo al usuario; no elijas otra música."
+    return f"La música del modo («{query}») YA está sonando en la Echo: no reproduzcas nada más."
 
 
 def fast_targets(target, devices, action="on"):

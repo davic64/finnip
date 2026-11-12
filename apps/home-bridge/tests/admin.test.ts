@@ -180,6 +180,40 @@ describe("modes", () => {
         expect(music).toEqual({ "script.modo_cine": false, "script.modo_viejo": true });
     });
 
+    it("sets a select's option and a number's value, within what they offer", async () => {
+        const effect = entity("select.efecto_audio", "mic_energic", { friendly_name: "Efecto de audio", options: ["mic_energic", "mic_rhythm"] });
+        const sensitivity = entity("number.sensibilidad_audio", "50", { friendly_name: "Sensibilidad de audio", min: 0, max: 100, step: 1 });
+        const { app, ha, labeled } = setup({ entities: [LAMP, LEDS, ECHO, effect, sensitivity] });
+        labeled.push("select.efecto_audio", "number.sensibilidad_audio");
+        const steps = [
+            { device: "select.efecto_audio", action: "option", params: { option: "mic_rhythm" } },
+            { device: "number.sensibilidad_audio", action: "value", params: { value: 80 } },
+        ];
+        const saved = await app.inject({ method: "PUT", url: "/modes/fiesta", headers, payload: { music: true, steps } });
+        expect(saved.json()).toMatchObject({ editable: true, steps });
+        expect(ha.scripts.get("modo_fiesta")?.sequence).toEqual([
+            step("select.select_option", "select.efecto_audio", { option: "mic_rhythm" }),
+            step("number.set_value", "number.sensibilidad_audio", { value: 80 }),
+        ]);
+        for (const bad of [{ ...steps[0], params: { option: "mic_disco" } }, { ...steps[1], params: { value: 150 } }]) {
+            const refused = await app.inject({ method: "PUT", url: "/modes/fiesta", headers, payload: { steps: [bad] } });
+            expect(refused.statusCode).toBe(400);
+        }
+    });
+
+    it("keeps a chosen song, playlist or artist as the mode's music", async () => {
+        const { app, ha, labeled } = setup();
+        const payload = { ...lectura, music: " la estación de Coldplay " };
+        const saved = await app.inject({ method: "PUT", url: "/modes/lectura", headers, payload });
+        expect(saved.json()).toMatchObject({ music: "la estación de Coldplay" });
+        expect(ha.scripts.get("modo_lectura")?.description).toBe("Finnip: música: la estación de Coldplay");
+        labeled.push("script.modo_lectura");
+        const device = (await app.inject({ method: "GET", url: "/devices/script.modo_lectura", headers })).json();
+        expect(device.music).toBe("la estación de Coldplay");
+        const empty = await app.inject({ method: "PUT", url: "/modes/lectura", headers, payload: { ...lectura, music: "  " } });
+        expect(empty.statusCode).toBe(400);
+    });
+
     it.each([
         ["a device that is not exposed", { device: "lock.puerta_principal", action: "off" }, /no expuesto/],
         ["an out of range value", { device: "light.lampara", action: "color_temp", params: { kelvin: 9000 } }, /2000 and 6500/],

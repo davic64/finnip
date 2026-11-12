@@ -268,6 +268,21 @@ class ModeTest(unittest.TestCase):
         self.assertIn("Modo cálido, Modo cine", unknown["context"])
         self.assertNotIn(("POST", "/devices/script.modo_fiesta/run"), calls)
 
+    def test_plays_the_music_chosen_for_the_mode(self):
+        calls = []
+        def bridge(method, path, body=None):
+            calls.append((method, path, body))
+            if path == "/devices":
+                return {"devices": [{"id": "script.modo_rock", "name": "Modo rock", "domain": "script",
+                                     "music": "la estación de AC/DC"},
+                                    {"id": "media_player.echo", "name": "Echo", "domain": "media_player"}]}
+            return {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            rock = plugin.fast_path_hook(user_message="modo rock")
+        self.assertIn(("POST", "/devices/media_player.echo/play", {"query": "la estación de AC/DC"}), calls)
+        self.assertIn("YA está sonando", rock["context"])
+        self.assertNotIn("elige tú", rock["context"])
+
 
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
