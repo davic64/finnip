@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -113,7 +114,11 @@ HOME = {"devices": [
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
 class FastPathTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def hook(self, message):
+        plugin.RECENT.clear()
         sent = []
 
         def urlopen(request, timeout):
@@ -128,7 +133,7 @@ class FastPathTest(unittest.TestCase):
         result, posts = self.hook('"Apaga todas las luces."')
         self.assertEqual(posts, [f"{plugin.BRIDGE_URL}/devices/light.lampara/off",
                                  f"{plugin.BRIDGE_URL}/devices/light.leds_monitores/off"])
-        self.assertIn("YA se ejecutó", result["context"])
+        self.assertEqual(result, {"action": "block", "message": "Listo, señor."})  # confirmed: no model turn
 
     def test_single_device_by_name(self):
         _, posts = self.hook('"Apara las luces."')  # Whisper mishearing of "Apaga"
@@ -158,7 +163,7 @@ class FastPathTest(unittest.TestCase):
         post = [r for r in sent if r.get_method() == "POST"]
         self.assertEqual([r.full_url for r in post], [f"{plugin.BRIDGE_URL}/devices/light.leds_monitores/color"])
         self.assertEqual(json.loads(post[0].data), {"rgb": [255, 0, 0]})
-        self.assertIn("YA se ejecutó", result["context"])
+        self.assertEqual(result, {"action": "block", "message": "Listo, señor."})
         for message in ("cambia los monitores a azul", "ponme la lámpara de color verde"):
             self.assertEqual(self.hook(message)[1][0].rsplit("/", 1)[1], "color", message)
         for message in ("pon música", "pon los monitores en rojo en 5 minutos", "¿pongo los monitores en rojo?"):
@@ -224,10 +229,11 @@ class FastPathTest(unittest.TestCase):
         with mock.patch.object(plugin, "call_bridge", bridge):
             out = plugin.fast_path_hook(user_message="Pausa la música")
         self.assertEqual(sent[-1], ("POST", "/devices/media_player.echo/pause", None))
-        self.assertIn("YA se ejecutó", out["context"])
+        self.assertEqual(out, {"action": "block", "message": "Listo, señor."})
 
     def test_bare_continua_resumes_only_paused_music(self):
         for state, resumed in (("paused", True), ("idle", False), ("playing", False)):
+            plugin.RECENT.clear()
             sent = []
             def bridge(method, path, body=None):
                 sent.append((method, path))
@@ -237,7 +243,82 @@ class FastPathTest(unittest.TestCase):
                 out = plugin.fast_path_hook(user_message="Continúa.")
             self.assertEqual(("POST", "/devices/media_player.echo/resume") in sent, resumed, state)
             self.assertEqual(out is not None, resumed, state)
+    def test_unconfirmed_order_lets_the_model_answer(self):
+        def bridge(method, path, body=None):
+            return HOME if method == "GET" else {"confirmed": False}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            result = plugin.fast_path_hook(user_message="apaga la lámpara")
+        self.assertIn("YA se ejecutó", result["context"])
+
+    def test_the_model_learns_what_was_done_without_it(self):
+        def bridge(method, path, body=None):
+            return HOME if method == "GET" else {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            blocked = plugin.fast_path_hook(user_message='"Apaga la lámpara."', session_id="s1")
+            later = plugin.fast_path_hook(user_message="vuelve a prender lo que apagaste", session_id="s1")
+            other = plugin.fast_path_hook(user_message="vuelve a prender lo que apagaste", session_id="s2")
+        self.assertEqual(blocked, {"action": "block", "message": "Listo, señor."})  # no extra keys for Hermes
+        self.assertIn("«Apaga la lámpara.» → off en light.lampara (respondiste «Listo, señor.»)", later["context"])
+        self.assertIsNone(other)
+        self.assertIsNone(plugin.recent_note("s1", now=time.time() + 3601))  # an hour later it is gone
+
+
+@mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32, "OPENROUTER_API_KEY": "sk-or-test"})
+class JevTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
+    def hook(self, message, answers):
+        """fast_path_hook with Jev answering `answers` (choice -> probability) -> (result, POSTs, Jev calls)."""
+        posts, asked = [], []
+
+        def urlopen(request, timeout):
+            if request.full_url == plugin.JEV_URL:
+                asked.append(json.loads(request.data))
+                return FakeResponse(json.dumps({"answers": {
+                    q: {"choice": c, "probabilities": {c: p}} for q, (c, p) in answers.items()}}).encode())
+            if request.get_method() == "POST":
+                posts.append((request.full_url.split("/devices/")[1], request.data and json.loads(request.data)))
+            return FakeResponse(json.dumps(HOME if request.get_method() == "GET" else {"confirmed": True}).encode())
+
+        with mock.patch.object(plugin.urllib.request, "urlopen", urlopen):
+            return plugin.fast_path_hook(user_message=message), posts, asked
+
+    def test_jev_runs_an_order_the_regexes_miss(self):
+        result, posts, asked = self.hook('"Deja a oscuras la lámpara."', {"intent": ("off", 0.95), "target": ("d0", 0.9)})
+        self.assertEqual(posts, [("light.lampara/off", None)])
+        self.assertEqual(result, {"action": "block", "message": "Listo, señor."})
+        self.assertEqual(asked[0]["questions"]["target"]["criteria"]["d2"], "Impresora")
+        _, posts, _ = self.hook("quiero las luces de color rojo", {"intent": ("color", 0.9), "target": ("all", 0.8),
+                                                                    "color": ("rojo", 0.9)})
+        self.assertEqual(posts, [("light.lampara/color", {"rgb": [255, 0, 0]}),
+                                 ("light.leds_monitores/color", {"rgb": [255, 0, 0]})])
+
+    def test_unsure_or_other_goes_to_the_model(self):
+        for answers in ({"intent": ("off", 0.6), "target": ("d0", 0.9)}, {"intent": ("off", 0.9), "target": ("d0", 0.5)},
+                        {"intent": ("other", 0.99)}, {"intent": ("color", 0.9), "target": ("d0", 0.9)}):
+            result, posts, _ = self.hook("deja a oscuras la lámpara", answers)
+            self.assertEqual((result, posts), (None, []), answers)
+
+    def test_questions_negations_and_timers_never_reach_jev(self):
+        for message in ("¿la lámpara sigue prendida?", "no apagues la lámpara", "deja a oscuras la lámpara en 10 minutos",
+                        "oscurece la lámpara y la impresora", "qué tal tu día", "hola"):
+            result, posts, asked = self.hook(message, {"intent": ("off", 0.99), "target": ("d0", 0.99)})
+            self.assertEqual((result, posts, asked), (None, [], []), message)
+
+    def test_jev_failure_goes_to_the_model(self):
+        def urlopen(request, timeout):
+            if request.full_url == plugin.JEV_URL:
+                raise urllib.error.URLError("down")
+            return FakeResponse(json.dumps(HOME).encode())
+        with mock.patch.object(plugin.urllib.request, "urlopen", urlopen):
+            self.assertIsNone(plugin.fast_path_hook(user_message="deja a oscuras la lámpara"))
+
+
 class ModeTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def test_parse(self):
         self.assertEqual(plugin.parse_mode_order("Modo estudio."), "modo estudio")
         self.assertEqual(plugin.parse_mode_order("Finnip, activa el modo trabajo profundo"), "modo trabajo profundo")
@@ -272,6 +353,9 @@ class ModeTest(unittest.TestCase):
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
 class AdminTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def call(self, params, replies=None):
         sent = []
         def bridge(method, path, body=None):
@@ -322,7 +406,7 @@ class AdminTest(unittest.TestCase):
         self.assertIn(("POST", "/devices/script.modo_calido/run", None), calls)
         self.assertIn(("POST", "/devices/media_player.echo/play", {"query": "rock"}), calls)
         self.assertIn(("POST", "/devices/light.lampara/brightness", {"brightness": 40}), calls)
-        self.assertIn("«Bienvenido a casa, señor.»", done["context"])
+        self.assertEqual(done, {"action": "block", "message": "Bienvenido a casa, señor."})
 
     def test_step_params_declare_their_fields(self):
         params = plugin.SCHEMA["parameters"]["properties"]["steps"]["items"]["properties"]["params"]

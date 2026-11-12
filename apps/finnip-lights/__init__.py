@@ -2,6 +2,7 @@ import difflib
 import json
 import os
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -422,7 +423,10 @@ def routine_fast_path(user_message):
     if item is None:
         return None
     reply, failed = run_routine(item)
-    note = f" Después, en una frase corta, dile que falló: {'; '.join(failed)}." if failed else ""
+    if not failed:
+        # said word for word: no model turn at all
+        return {"action": "block", "message": reply, "done": f"rutina «{item['phrase']}»"}
+    note =f" Después, en una frase corta, dile que falló: {'; '.join(failed)}." if failed else ""
     return {"context": (f"[finnip fast path] La rutina del usuario «{item['phrase']}» YA se ejecutó. Responde exactamente "
                         f"y solo esto, sin agregar nada ni llamar herramientas: «{reply}».{note}")}
 
@@ -538,6 +542,8 @@ def music_fast_path(user_message):
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté '{action}' en Alexa antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
+    if action != "play" and confirmed({action: result}):
+        return {"action": "block", "message": DONE, "done": f"{action} en {speakers[0]['id']}"}
     # Alexa takes a few seconds to change songs: the title in the reply may still be the previous one.
     heard = (f"Pedí '{body['query']}'. NO digas qué canción suena (el título de la respuesta puede ser el de "
              "antes): confirma solo lo que pusiste. " if action == "play" else "")
@@ -547,9 +553,149 @@ def music_fast_path(user_message):
         "No vuelvas a llamar herramientas ni a verificar; confirma al usuario en una frase corta.")}
 
 
-def fast_path_hook(user_message=None, **kwargs):
+# A confirmed order ends the turn with this reply (pre_llm_call "block"): no model call at all.
+DONE = "Listo, señor."
+
+
+def confirmed(results):
+    return all(isinstance(r, dict) and r.get("confirmed") for r in results.values())
+
+
+def run_order(action, ids, body):
+    try:
+        results = {id_: call_bridge("POST", f"/devices/{id_}/{action}", body) for id_ in ids}
+    except Exception as error:
+        return {"context": f"[finnip fast path] Intenté '{action}' antes de tu turno y falló: {error}. "
+                           "Resuélvelo tú normalmente."}
+    if confirmed(results):
+        return {"action": "block", "message": DONE, "done": f"{action} en {', '.join(ids)}"}
+    return {"context": (
+        f"[finnip fast path] Esta orden YA se ejecutó antes de tu turno: {action} en {', '.join(ids)}. "
+        f"Respuesta de Home Bridge: {json.dumps(results, ensure_ascii=False)}. "
+        "No vuelvas a llamar finnip_lights por esta orden; solo confirma brevemente al usuario.")}
+
+
+# Jev (typesafe/jev-1.13 on OpenRouter, ~0.5 s) reads the short orders the regexes above miss
+# ("deja a oscuras la lámpara", "quiero las luces rojas"), so the model of the moment is not the one
+# deciding. Jev only picks among options built from the real devices and modes; below
+# JEV_MIN_CONFIDENCE, on any error or without OPENROUTER_API_KEY, the message goes to the model.
+JEV_URL = os.environ.get("JEV_URL", "https://openrouter.ai/api/alpha/decisions")
+JEV_MODEL = os.environ.get("JEV_MODEL", "typesafe/jev-1.13")
+JEV_MIN_CONFIDENCE = float(os.environ.get("JEV_MIN_CONFIDENCE", "0.7"))
+INTENTS = {
+    "on": "Prender o encender un dispositivo o luz, ahora mismo",
+    "off": "Apagar un dispositivo o luz, ahora mismo",
+    "color": "Cambiar el color de una luz, ahora mismo",
+    "mode": "Activar un modo o escena de la casa",
+    "pause": "Pausar o detener la música",
+    "resume": "Reanudar la música pausada",
+    "other": "Cualquier otra cosa: preguntas, plática, poner música nueva, brillo, recordatorios, impresora, "
+             "calendario, varias órdenes juntas",
+}
+COLOR_NAMES = ("rojo", "verde", "azul", "amarillo", "naranja", "morado", "lila", "rosa", "magenta", "cian",
+               "turquesa", "blanco")
+# Questions, negations, timers, conditions and chained orders stay with the model: acting on a misread
+# one is worse than waiting for it.
+NOT_FOR_JEV = {"que", "cual", "cuales", "cuanto", "cuanta", "cuantos", "cuantas", "como", "cuando", "donde",
+               "quien", "porque", "esta", "estan", "hay", "puedes", "sabes", "no", "nunca", "y", "si", "luego",
+               "despues", "manana", "minuto", "minutos", "hora", "horas", "segundos", "antes", "hasta"}
+
+
+def jev_choices(message, questions):
+    """{question: option} with Jev's pick, or None where it is not confident; {} on any failure."""
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key.startswith("sk-or-"):
+        return {}
+    body = {"model": JEV_MODEL, "state": {"message": message}, "questions": {
+        qid: {"type": "choice", "instructions": text, "criteria": options}
+        for qid, (text, options) in questions.items()}}
+    request = urllib.request.Request(JEV_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            answers = json.loads(response.read().decode("utf-8"))["answers"]
+    except Exception:
+        return {}
+    picks = {}
+    for qid, answer in answers.items():
+        choice = (answer or {}).get("choice")
+        sure = ((answer or {}).get("probabilities") or {}).get(choice, 0) >= JEV_MIN_CONFIDENCE
+        picks[qid] = choice if sure else None
+    return picks
+
+
+def jev_fast_path(user_message):
+    message = re.sub(r"^((oye|hey|ok) )?finnip[,.]?\s*", "", user_message.strip().strip('"'), flags=re.IGNORECASE)
+    words = [w for w in _words(message) if w not in FILLER]
+    if not 2 <= len(words) <= 12 or "?" in message or NOT_FOR_JEV & set(words) or any(w.isdigit() for w in words):
+        return None
+    try:
+        devices = call_bridge("GET", "/devices").get("devices", [])
+    except Exception:
+        return None
+    things = {f"d{i}": d for i, d in enumerate(devices) if d.get("domain") not in ("script", "media_player")}
+    modes = {f"m{i}": d for i, d in enumerate(devices) if d.get("domain") == "script"}
+    speakers = [d for d in devices if d.get("domain") == "media_player"]
+    questions = {"intent": ("¿Qué orden directa da el usuario, si da una?", INTENTS),
+                 "color": ("Si pide un color, ¿cuál?", {c: c for c in COLOR_NAMES})}
+    if things:
+        questions["target"] = ("¿Sobre qué dispositivo es la orden?", {
+            "all": "Todas las luces", **{k: d.get("name") or d["id"] for k, d in things.items()}})
+    if modes:
+        questions["mode"] = ("¿Qué modo pide?", {k: d.get("name") or d["id"] for k, d in modes.items()})
+    pick = jev_choices(message, questions)
+    intent = pick.get("intent")
+    if intent in ("on", "off", "color"):
+        target = pick.get("target")
+        ids = fast_targets("all", devices, intent) if target == "all" else [things[target]["id"]] if target in things else None
+        if not ids or (intent == "color" and not pick.get("color")):
+            return None
+        return run_order(intent, ids, {"rgb": COLORS[pick["color"]]} if intent == "color" else None)
+    if intent == "mode" and pick.get("mode") in modes:
+        return mode_fast_path(modes[pick["mode"]].get("name") or "")  # its own parser reads "Modo cine"
+    if intent in ("pause", "resume") and len(speakers) == 1:
+        return run_order(intent, [speakers[0]["id"]], None)
+    return None
+
+
+# A blocked turn reaches Hermes' history as "[Message withheld…]" + the reply, so the model would not
+# know what was done ("vuelve a prender lo que apagaste"). Each session keeps its last orders here and
+# every turn that does reach the model gets them as context.
+# ponytail: in memory, lost when Hermes restarts; a JSON under /opt/data if that ever matters.
+RECENT = {}  # session_id -> [(time.time(), what the user said, what was done, reply)]
+RECENT_MAX, RECENT_SECONDS = 10, 3600
+
+
+def recent_note(session_id, now=None):
+    now = now or time.time()
+    items = [i for i in RECENT.get(session_id, []) if now - i[0] < RECENT_SECONDS]
+    RECENT[session_id] = items
+    if not items:
+        return None
+    lines = "; ".join(f"hace {int((now - t) // 60)} min «{said}» → {done} (respondiste «{reply}»)"
+                      for t, said, done, reply in items)
+    return ("[finnip fast path] Órdenes de esta conversación que Finnip ya ejecutó y verificó con Home Bridge "
+            "antes de llegar a ti (en el historial aparecen como mensajes retenidos; esas respuestas fueron "
+            f"correctas, no las aclares ni las menciones si no te preguntan): {lines}.")
+
+
+def fast_path_hook(user_message=None, session_id=None, **kwargs):
     if not isinstance(user_message, str) or "\n" in user_message.strip():
         return None
+    result = fast_path(user_message)
+    key = session_id or "default"
+    if result and result.get("action") == "block":
+        done = result.pop("done", "")
+        RECENT.setdefault(key, []).append((time.time(), user_message.strip().strip('"'), done, result["message"]))
+        del RECENT[key][:-RECENT_MAX]
+        return result
+    note = recent_note(key)
+    if note is None:
+        return result
+    return {"context": f"{note}\n{result['context']}" if result else note}
+
+
+def fast_path(user_message):
     done = routine_fast_path(user_message)
     if done is not None:
         return done
@@ -558,20 +704,14 @@ def fast_path_hook(user_message=None, **kwargs):
         return mode
     order = parse_fast_order(user_message)
     if order is None:
-        return music_fast_path(user_message)
+        return music_fast_path(user_message) or jev_fast_path(user_message)
     action, target, body = order
     try:
         ids = fast_targets(target, call_bridge("GET", "/devices").get("devices", []), action)
-        if not ids:
-            return None
-        results = {id_: call_bridge("POST", f"/devices/{id_}/{action}", body) for id_ in ids}
     except Exception as error:
         return {"context": f"[finnip fast path] Intenté '{action}' antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
-    return {"context": (
-        f"[finnip fast path] Esta orden YA se ejecutó antes de tu turno: {action} en {', '.join(ids)}. "
-        f"Respuesta de Home Bridge: {json.dumps(results, ensure_ascii=False)}. "
-        "No vuelvas a llamar finnip_lights por esta orden; solo confirma brevemente al usuario.")}
+    return run_order(action, ids, body) if ids else jev_fast_path(user_message)  # "apágame todo"
 
 
 def register(ctx):
