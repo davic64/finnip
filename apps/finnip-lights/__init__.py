@@ -674,8 +674,9 @@ def recent_note(session_id, now=None):
         return None
     lines = "; ".join(f"hace {int((now - t) // 60)} min «{said}» → {done} (respondiste «{reply}»)"
                       for t, said, done, reply in items)
-    return ("[finnip fast path] Órdenes que ya resolví sin ti en esta conversación (en el historial aparecen como "
-            f"mensajes retenidos): {lines}.")
+    return ("[finnip fast path] Órdenes de esta conversación que Finnip ya ejecutó y verificó con Home Bridge "
+            "antes de llegar a ti (en el historial aparecen como mensajes retenidos; esas respuestas fueron "
+            f"correctas, no las aclares ni las menciones si no te preguntan): {lines}.")
 
 
 def fast_path_hook(user_message=None, session_id=None, **kwargs):
