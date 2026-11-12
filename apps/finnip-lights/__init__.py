@@ -2,6 +2,7 @@ import difflib
 import json
 import os
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -423,7 +424,8 @@ def routine_fast_path(user_message):
         return None
     reply, failed = run_routine(item)
     if not failed:
-        return {"action": "block", "message": reply}  # said word for word: no model turn at all
+        # said word for word: no model turn at all
+        return {"action": "block", "message": reply, "done": f"rutina «{item['phrase']}»"}
     note =f" Después, en una frase corta, dile que falló: {'; '.join(failed)}." if failed else ""
     return {"context": (f"[finnip fast path] La rutina del usuario «{item['phrase']}» YA se ejecutó. Responde exactamente "
                         f"y solo esto, sin agregar nada ni llamar herramientas: «{reply}».{note}")}
@@ -541,7 +543,7 @@ def music_fast_path(user_message):
         return {"context": f"[finnip fast path] Intenté '{action}' en Alexa antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
     if action != "play" and confirmed({action: result}):
-        return {"action": "block", "message": DONE}
+        return {"action": "block", "message": DONE, "done": f"{action} en {speakers[0]['id']}"}
     # Alexa takes a few seconds to change songs: the title in the reply may still be the previous one.
     heard = (f"Pedí '{body['query']}'. NO digas qué canción suena (el título de la respuesta puede ser el de "
              "antes): confirma solo lo que pusiste. " if action == "play" else "")
@@ -566,7 +568,7 @@ def run_order(action, ids, body):
         return {"context": f"[finnip fast path] Intenté '{action}' antes de tu turno y falló: {error}. "
                            "Resuélvelo tú normalmente."}
     if confirmed(results):
-        return {"action": "block", "message": DONE}
+        return {"action": "block", "message": DONE, "done": f"{action} en {', '.join(ids)}"}
     return {"context": (
         f"[finnip fast path] Esta orden YA se ejecutó antes de tu turno: {action} en {', '.join(ids)}. "
         f"Respuesta de Home Bridge: {json.dumps(results, ensure_ascii=False)}. "
@@ -656,9 +658,43 @@ def jev_fast_path(user_message):
     return None
 
 
-def fast_path_hook(user_message=None, **kwargs):
+# A blocked turn reaches Hermes' history as "[Message withheld…]" + the reply, so the model would not
+# know what was done ("vuelve a prender lo que apagaste"). Each session keeps its last orders here and
+# every turn that does reach the model gets them as context.
+# ponytail: in memory, lost when Hermes restarts; a JSON under /opt/data if that ever matters.
+RECENT = {}  # session_id -> [(time.time(), what the user said, what was done, reply)]
+RECENT_MAX, RECENT_SECONDS = 10, 3600
+
+
+def recent_note(session_id, now=None):
+    now = now or time.time()
+    items = [i for i in RECENT.get(session_id, []) if now - i[0] < RECENT_SECONDS]
+    RECENT[session_id] = items
+    if not items:
+        return None
+    lines = "; ".join(f"hace {int((now - t) // 60)} min «{said}» → {done} (respondiste «{reply}»)"
+                      for t, said, done, reply in items)
+    return ("[finnip fast path] Órdenes que ya resolví sin ti en esta conversación (en el historial aparecen como "
+            f"mensajes retenidos): {lines}.")
+
+
+def fast_path_hook(user_message=None, session_id=None, **kwargs):
     if not isinstance(user_message, str) or "\n" in user_message.strip():
         return None
+    result = fast_path(user_message)
+    key = session_id or "default"
+    if result and result.get("action") == "block":
+        done = result.pop("done", "")
+        RECENT.setdefault(key, []).append((time.time(), user_message.strip().strip('"'), done, result["message"]))
+        del RECENT[key][:-RECENT_MAX]
+        return result
+    note = recent_note(key)
+    if note is None:
+        return result
+    return {"context": f"{note}\n{result['context']}" if result else note}
+
+
+def fast_path(user_message):
     done = routine_fast_path(user_message)
     if done is not None:
         return done

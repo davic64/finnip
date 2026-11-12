@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -113,7 +114,11 @@ HOME = {"devices": [
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
 class FastPathTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def hook(self, message):
+        plugin.RECENT.clear()
         sent = []
 
         def urlopen(request, timeout):
@@ -228,6 +233,7 @@ class FastPathTest(unittest.TestCase):
 
     def test_bare_continua_resumes_only_paused_music(self):
         for state, resumed in (("paused", True), ("idle", False), ("playing", False)):
+            plugin.RECENT.clear()
             sent = []
             def bridge(method, path, body=None):
                 sent.append((method, path))
@@ -244,9 +250,24 @@ class FastPathTest(unittest.TestCase):
             result = plugin.fast_path_hook(user_message="apaga la lámpara")
         self.assertIn("YA se ejecutó", result["context"])
 
+    def test_the_model_learns_what_was_done_without_it(self):
+        def bridge(method, path, body=None):
+            return HOME if method == "GET" else {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            blocked = plugin.fast_path_hook(user_message='"Apaga la lámpara."', session_id="s1")
+            later = plugin.fast_path_hook(user_message="vuelve a prender lo que apagaste", session_id="s1")
+            other = plugin.fast_path_hook(user_message="vuelve a prender lo que apagaste", session_id="s2")
+        self.assertEqual(blocked, {"action": "block", "message": "Listo, señor."})  # no extra keys for Hermes
+        self.assertIn("«Apaga la lámpara.» → off en light.lampara (respondiste «Listo, señor.»)", later["context"])
+        self.assertIsNone(other)
+        self.assertIsNone(plugin.recent_note("s1", now=time.time() + 3601))  # an hour later it is gone
+
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32, "OPENROUTER_API_KEY": "sk-or-test"})
 class JevTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def hook(self, message, answers):
         """fast_path_hook with Jev answering `answers` (choice -> probability) -> (result, POSTs, Jev calls)."""
         posts, asked = [], []
@@ -295,6 +316,9 @@ class JevTest(unittest.TestCase):
 
 
 class ModeTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def test_parse(self):
         self.assertEqual(plugin.parse_mode_order("Modo estudio."), "modo estudio")
         self.assertEqual(plugin.parse_mode_order("Finnip, activa el modo trabajo profundo"), "modo trabajo profundo")
@@ -329,6 +353,9 @@ class ModeTest(unittest.TestCase):
 
 @mock.patch.dict(os.environ, {"BRIDGE_API_KEY": "k" * 32})
 class AdminTest(unittest.TestCase):
+    def setUp(self):
+        plugin.RECENT.clear()  # the fast path log is per process
+
     def call(self, params, replies=None):
         sent = []
         def bridge(method, path, body=None):
