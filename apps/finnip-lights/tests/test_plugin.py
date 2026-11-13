@@ -164,6 +164,13 @@ class FastPathTest(unittest.TestCase):
         for message in ("pon música", "pon los monitores en rojo en 5 minutos", "¿pongo los monitores en rojo?"):
             self.assertEqual(self.hook(message), (None, []), message)
 
+    def test_warm_light_is_warm_white_not_orange(self):
+        for message in ("pon la lámpara en luz cálida", "Pon la lámpara cálida.", "pon las luces en blanco cálido"):
+            order = plugin.parse_fast_order(message)
+            self.assertEqual((order[0], order[2]), ("color_temp", {"kelvin": plugin.WARM_KELVIN}), message)
+        self.assertEqual(plugin.parse_fast_order("pon la lámpara en luz cálida")[1], "lampara")
+        self.assertEqual(plugin.parse_fast_order("pon las luces en luz cálida")[1], "all")
+
     def test_bridge_failure_hands_back_to_model(self):
         with mock.patch.object(plugin.urllib.request, "urlopen", side_effect=urllib.error.URLError("x")):
             result = plugin.fast_path_hook(user_message='"apaga las luces"')

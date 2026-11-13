@@ -185,7 +185,9 @@ SCHEMA = {
                 "type": "integer",
                 "minimum": 1000,
                 "maximum": 12000,
-                "description": "Temperatura de color para color_temp: ~2700 blanco cálido, ~4000 neutro, ~6500 frío",
+                "description": ("Temperatura de color para color_temp: 2180 luz cálida (la que quiere el usuario), ~4000 neutro, "
+                                "~6500 frío. Luz cálida, blanco cálido o 'lo cálido' es SIEMPRE color_temp 2180, nunca "
+                                "color con un rgb naranja"),
             },
             "brightness": {
                 "type": "integer",
@@ -301,6 +303,10 @@ COLORS = {
     "rosa": [255, 60, 160], "rosado": [255, 60, 160], "magenta": [255, 0, 255],
     "cian": [0, 230, 255], "turquesa": [0, 255, 190], "blanco": [255, 255, 255], "blanca": [255, 255, 255],
 }
+# "Luz cálida" is warm WHITE (the bulb's white LEDs), the one Alexa sets: never an orange rgb, which
+# lights the color LEDs instead. 2180 K is what the user picked on the lamp (2026-11-12).
+WARM_KELVIN = 2180
+WARM = {"calido", "calida"}
 COLOR_LINKS = {"en", "a", "al", "color", "de"}
 ALL_LIGHTS = {"luces", "las luces", "todas las luces"}
 FILLER = {"finnip", "por", "favor", "porfa", "porfavor"}
@@ -309,18 +315,21 @@ ARTICLES = {"el", "la", "los", "las", "de", "del"}
 
 def parse_color_order(words):
     """["pon", "los", "monitores", "en", "rojo"] -> ("color", "monitores", {"rgb": [255, 0, 0]})."""
-    if words[0] not in COLOR_VERBS or words[-1] not in COLORS:
+    if words[0] not in COLOR_VERBS or (words[-1] not in COLORS and words[-1] not in WARM):
         return None
     rest = words[1:-1]
+    if words[-1] in WARM:  # "pon la lámpara en luz cálida", "pon la lámpara en blanco cálido"
+        while rest and rest[-1] in {"luz", "blanco", "blanca"}:
+            rest.pop()
     while rest and rest[-1] in COLOR_LINKS:
         rest.pop()
-    body = {"rgb": COLORS[words[-1]]}
+    action, body = ("color_temp", {"kelvin": WARM_KELVIN}) if words[-1] in WARM else ("color", {"rgb": COLORS[words[-1]]})
     if " ".join(rest) in ALL_LIGHTS:
-        return "color", "all", body
+        return action, "all", body
     target = [w for w in rest if w not in ARTICLES]
     if not target or len(target) > 3 or any(w.isdigit() for w in target):
         return None
-    return "color", " ".join(target), body
+    return action, " ".join(target), body
 
 
 def parse_fast_order(message):
@@ -550,7 +559,7 @@ def fast_targets(target, devices, action="on"):
     contains every target word. None when nothing or more than one device matches."""
     if target == "all":
         ids = [d["id"] for d in devices if d.get("domain") == "light"
-               and (action != "color" or "color" in d.get("capabilities", ["color"]))]
+               and (action not in ("color", "color_temp") or action in d.get("capabilities", [action]))]
         return ids or None
     wanted = set(target.split())
     ids = [d["id"] for d in devices if wanted <= set(normalize(d.get("name", "")).split())]
