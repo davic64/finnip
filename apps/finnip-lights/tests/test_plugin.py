@@ -164,6 +164,13 @@ class FastPathTest(unittest.TestCase):
         for message in ("pon música", "pon los monitores en rojo en 5 minutos", "¿pongo los monitores en rojo?"):
             self.assertEqual(self.hook(message), (None, []), message)
 
+    def test_warm_light_is_warm_white_not_orange(self):
+        for message in ("pon la lámpara en luz cálida", "Pon la lámpara cálida.", "pon las luces en blanco cálido"):
+            order = plugin.parse_fast_order(message)
+            self.assertEqual((order[0], order[2]), ("color_temp", {"kelvin": plugin.WARM_KELVIN}), message)
+        self.assertEqual(plugin.parse_fast_order("pon la lámpara en luz cálida")[1], "lampara")
+        self.assertEqual(plugin.parse_fast_order("pon las luces en luz cálida")[1], "all")
+
     def test_bridge_failure_hands_back_to_model(self):
         with mock.patch.object(plugin.urllib.request, "urlopen", side_effect=urllib.error.URLError("x")):
             result = plugin.fast_path_hook(user_message='"apaga las luces"')
@@ -267,6 +274,21 @@ class ModeTest(unittest.TestCase):
         self.assertIn("no existe", unknown["context"])
         self.assertIn("Modo cálido, Modo cine", unknown["context"])
         self.assertNotIn(("POST", "/devices/script.modo_fiesta/run"), calls)
+
+    def test_plays_the_music_chosen_for_the_mode(self):
+        calls = []
+        def bridge(method, path, body=None):
+            calls.append((method, path, body))
+            if path == "/devices":
+                return {"devices": [{"id": "script.modo_rock", "name": "Modo rock", "domain": "script",
+                                     "music": "la estación de AC/DC"},
+                                    {"id": "media_player.echo", "name": "Echo", "domain": "media_player"}]}
+            return {"confirmed": True}
+        with mock.patch.object(plugin, "call_bridge", bridge):
+            rock = plugin.fast_path_hook(user_message="modo rock")
+        self.assertIn(("POST", "/devices/media_player.echo/play", {"query": "la estación de AC/DC"}), calls)
+        self.assertIn("YA está sonando", rock["context"])
+        self.assertNotIn("elige tú", rock["context"])
 
 
 

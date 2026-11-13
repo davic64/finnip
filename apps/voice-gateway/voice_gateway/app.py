@@ -32,7 +32,7 @@ MAX_ROUTINES = 50
 MAX_STEPS = 30
 # What a routine's step may do: Home Bridge's mode actions (it checks the values when the step runs).
 STEP_ACTIONS = {"on", "off", "brightness", "color", "color_temp", "open", "close", "stop", "position",
-                "temperature", "hvac_mode", "pause", "resume", "volume"}
+                "temperature", "hvac_mode", "pause", "resume", "volume", "option", "value"}
 MODE_SLUG = re.compile(r"^[a-z0-9_]{1,40}$")
 ENROLL_TIMEOUT = 120.0
 # Voice projects: actions the Mac app does for Finnip (projects.rs there checks every value again).

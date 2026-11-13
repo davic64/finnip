@@ -4,7 +4,8 @@ import { Refused, type AdminService } from "../services/admin.js";
 
 const modeBody = z.object({
     name: z.string().trim().min(1).max(60).optional(),
-    music: z.boolean().default(true),
+    // true: Finnip picks; false: none; text: exactly this for Alexa (checked like any play when the mode runs).
+    music: z.union([z.boolean(), z.string().trim().min(1).max(120)]).default(true),
     steps: z.array(z.object({
         device: z.string().min(1).max(100),
         action: z.string().min(1).max(40),

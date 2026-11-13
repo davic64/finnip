@@ -77,6 +77,7 @@
         on: "Encender", off: "Apagar", brightness: "Brillo", color: "Color", color_temp: "Luz blanca (temperatura)",
         volume: "Volumen", pause: "Pausar", resume: "Reanudar", open: "Abrir", close: "Cerrar", stop: "Detener",
         position: "Posición", temperature: "Temperatura", hvac_mode: "Modo del clima",
+        option: "Elegir", value: "Ajustar",
       };
       const $ = (sel, root = document) => root.querySelector(sel);
       const el = (tag, props = {}, ...kids) => {
@@ -101,6 +102,45 @@
 
       let devices = [];
       let modes = [];
+      // Music is the text Finnip says to Alexa ("reproduce <text> en Apple Music"). "la estación de X" is
+      // Apple Music's radio for X: that song or artist plus similar ones.
+      const SIMILAR = "la estación de ";
+      const KINDS = { song: ["Canción", "la canción "], artist: ["Artista", ""], playlist: ["Playlist", "la playlist "] };
+      function parseMusic(text) {
+        let rest = text || "";
+        const similar = rest.startsWith(SIMILAR);
+        if (similar) rest = rest.slice(SIMILAR.length);
+        const kind = ["song", "playlist"].find((k) => rest.startsWith(KINDS[k][1])) || "artist";
+        return { kind, name: rest.slice(KINDS[kind][1].length), similar };
+      }
+      const musicText = ({ kind, name, similar }) =>
+        name.trim() ? `${similar && kind !== "playlist" ? SIMILAR : ""}${KINDS[kind][1]}${name.trim()}` : "";
+      /** Music picker. value: true (Finnip picks, only if auto), false/"" (none) or Alexa text; onChange gets the same. */
+      function musicPicker(value, onChange, auto) {
+        const choice = el("select", {},
+          ...(auto ? [el("option", { value: "auto", textContent: "Finnip la elige" })] : []),
+          el("option", { value: "none", textContent: "Sin música" }),
+          el("option", { value: "pick", textContent: "Yo la elijo" }));
+        choice.value = typeof value === "string" && value ? "pick" : value === true && auto ? "auto" : "none";
+        const m = parseMusic(typeof value === "string" ? value : "");
+        const kind = el("select", {}, ...Object.entries(KINDS).map(([k, [label]]) => el("option", { value: k, textContent: label })));
+        kind.value = m.kind;
+        const name = el("input", { type: "text", value: m.name, maxLength: 100, placeholder: "Coldplay" });
+        const similar = el("input", { type: "checkbox", checked: m.similar });
+        const similarRow = el("label", { className: "row" }, similar, "y artistas similares");
+        const picked = el("div", { className: "fields wide" },
+          el("label", {}, "Qué es", kind), el("label", {}, "Nombre", name), similarRow);
+        const sync = () => {
+          picked.hidden = choice.value !== "pick";
+          similarRow.hidden = kind.value === "playlist";
+          name.placeholder = { song: "Yellow de Coldplay", artist: "Coldplay", playlist: "80s Hard Rock Essentials" }[kind.value];
+          onChange(choice.value === "auto" ? true : choice.value === "none" ? (auto ? false : "")
+            : musicText({ kind: kind.value, name: name.value, similar: similar.checked }) || (auto ? true : ""));
+        };
+        choice.onchange = kind.onchange = similar.onchange = name.oninput = sync;
+        sync();
+        return [el("label", {}, "Música en Alexa", choice), picked];
+      }
 
       $("#back").onclick = () => (history.length > 1 ? history.back() : (location.href = "/"));
       document.querySelectorAll("[data-tab]").forEach((tab) =>
@@ -151,6 +191,21 @@
           p.position ??= 100;
           box.append(rangeField("Posición", p.position, 0, 100, " %", (v) => (p.position = v)));
         }
+        if (step.action === "option") {
+          const options = device?.options || [];
+          if (!options.includes(p.option)) p.option = options[0];
+          // "mic_spectrum" -> "spectrum"
+          const pick = el("select", {}, ...options.map((o) => el("option", { value: o, textContent: o.replace(/^mic_/, "").replace(/_/g, " ") })));
+          pick.value = p.option;
+          pick.onchange = () => (p.option = pick.value);
+          box.append(el("label", {}, "Opción", pick));
+        }
+        if (step.action === "value") {
+          const min = device?.min ?? 0;
+          const max = device?.max ?? 100;
+          p.value ??= Math.round((min + max) / 2);
+          box.append(rangeField("Valor", p.value, min, max, "", (v) => (p.value = v)));
+        }
         if (step.action === "temperature") {
           p.temperature ??= 22;
           box.append(rangeField("Temperatura", p.temperature, 16, 30, " °C", (v) => (p.temperature = v)));
@@ -186,7 +241,6 @@
         const root = $("#modes");
         const msg = el("p", { className: "msg" });
         const name = el("input", { type: "text", value: draft.name, placeholder: "Modo cine", maxLength: 60 });
-        const music = el("input", { type: "checkbox", checked: draft.music });
         const stepsBox = el("div");
         const redraw = () => stepsBox.replaceChildren(...draft.steps.map((s) => stepEditor(s, draft.steps, redraw)));
         const add = el("button", { textContent: "+ Agregar paso", type: "button" });
@@ -204,7 +258,7 @@
           msg.className = "msg";
           msg.textContent = "Guardando…";
           try {
-            await api("PUT", `modes/${slug}`, { name: name.value.trim() || undefined, music: music.checked, steps: draft.steps });
+            await api("PUT", `modes/${slug}`, { name: name.value.trim() || undefined, music: draft.music, steps: draft.steps });
             await showModes();
           } catch (err) {
             msg.className = "msg error";
@@ -218,7 +272,7 @@
           el("h2", { textContent: mode ? `Editar ${mode.name}` : "Modo nuevo" }),
           el("div", { className: "fields", style: "margin-top:12px" },
             el("label", {}, "Nombre", name),
-            el("label", { className: "row", style: "align-self:end" }, music, "Finnip elige música al activarlo")),
+            ...musicPicker(draft.music, (v) => (draft.music = v), true)),
           stepsBox,
           el("div", { className: "row", style: "margin-top:14px" }, add, el("span", { className: "grow" }), cancel, save),
           msg));
@@ -248,7 +302,7 @@
           };
           return el("div", { className: "card" },
             el("div", { className: "grow" }, el("h2", { textContent: mode.name }),
-              el("span", { className: "tag", textContent: `${mode.steps?.length ?? "?"} pasos · ${mode.music ? "con música" : "sin música"}` })),
+              el("span", { className: "tag", textContent: `${mode.steps?.length ?? "?"} pasos · ${typeof mode.music === "string" ? `música: ${mode.music}` : mode.music ? "con música" : "sin música"}` })),
             edit, del);
         }));
         root.replaceChildren(el("div", { className: "row", style: "margin-bottom:12px" },
@@ -257,10 +311,69 @@
       }
 
       // --- routines ----------------------------------------------------------------------------------
-
+      // Listed like modes; one opens to edit. The file is saved whole (PUT routines) on every change.
+      let routines = [];
+      async function saveRoutines(next) {
+        routines = (await api("PUT", "routines", { routines: next })).routines;
+      }
+      function editRoutine(index) {
+        const r = structuredClone(index === null ? { phrase: "", reply: "", music: "", mode: "", steps: [] } : routines[index]);
+        r.steps ??= [];
+        const root = $("#routines");
+        const msg = el("p", { className: "msg" });
+        const field = (key, label, { tag = "input", wide, ...props }) => {
+          // textarea.type is read-only: assigning it threw and left the list empty
+          const input = el(tag, { ...(tag === "input" ? { type: "text" } : {}), value: r[key] || "", ...props });
+          input.oninput = () => (r[key] = input.value);
+          return el("label", { className: wide ? "wide" : "" }, label, input);
+        };
+        const mode = el("select", {}, el("option", { value: "", textContent: "Ninguno" }),
+          ...modes.map((m) => el("option", { value: m.name, textContent: m.name })));
+        mode.value = r.mode || "";
+        mode.onchange = () => (r.mode = mode.value);
+        // Actions: the same step editor as modes (lights on/off, brightness, color, volume…).
+        const steps = el("div");
+        const drawSteps = () => steps.replaceChildren(...r.steps.map((st) => stepEditor(st, r.steps, drawSteps)));
+        drawSteps();
+        const addStep = el("button", { textContent: "+ Acción", type: "button" });
+        addStep.onclick = () => {
+          const first = devices.find((d) => d.domain === "light") || devices.find((d) => d.domain !== "script");
+          if (!first) return (msg.textContent = "No hay dispositivos expuestos a Finnip.");
+          r.steps.push({ device: first.id, action: "", params: {} });
+          drawSteps();
+        };
+        const save = el("button", { className: "primary", textContent: "Guardar", type: "button" });
+        save.onclick = async () => {
+          if (r.phrase.trim().length < 3) return (msg.textContent = "Escribe la frase que la activa.");
+          msg.className = "msg";
+          msg.textContent = "Guardando…";
+          const next = [...routines];
+          if (index === null) next.push(r); else next[index] = r;
+          try {
+            await saveRoutines(next);
+            await showRoutines();
+          } catch (err) {
+            msg.className = "msg error";
+            msg.textContent = err.message;
+          }
+        };
+        const cancel = el("button", { className: "link", textContent: "Cancelar", type: "button" });
+        cancel.onclick = showRoutines;
+        root.replaceChildren(el("div", { className: "card" },
+          el("h2", { textContent: index === null ? "Rutina nueva" : `Editar «${r.phrase}»` }),
+          el("div", { className: "fields", style: "margin-top:12px" },
+            field("phrase", "Cuando diga «Finnip, …»", { placeholder: "despierta, ya llegó papá", maxLength: 80, wide: true }),
+            field("reply", "Finnip responde exactamente", { tag: "textarea", placeholder: "Bienvenido a casa, señor.", maxLength: 300, wide: true }),
+            ...musicPicker(r.music, (v) => (r.music = v), false),
+            el("label", {}, "Activa el modo (opcional)", mode)),
+          el("p", { className: "tag", style: "margin:16px 0 0", textContent: "Acciones (opcional)" }),
+          steps,
+          el("div", { className: "row", style: "margin-top:14px" }, addStep, el("span", { className: "grow" }), cancel, save),
+          msg));
+      }
       async function showRoutines() {
         const root = $("#routines");
-        let routines;
+        root.replaceChildren(el("p", { className: "empty", textContent: "Cargando…" }));
         try {
           routines = (await api("GET", "routines")).routines;
           if (!modes.length) modes = (await api("GET", "modes")).modes;
@@ -268,62 +381,26 @@
         } catch (err) {
           return root.replaceChildren(el("p", { className: "msg error", textContent: err.message }));
         }
-        const msg = el("p", { className: "msg" });
-        const box = el("div");
-        const draw = () => box.replaceChildren(...routines.map((r) => {
-          const field = (key, label, { tag = "input", wide, ...props }) => {
-            // textarea.type is read-only: assigning it threw and left the list empty
-            const input = el(tag, { ...(tag === "input" ? { type: "text" } : {}), value: r[key] || "", ...props });
-            input.oninput = () => (r[key] = input.value);
-            return el("label", { className: wide ? "wide" : "" }, label, input);
+        const add = el("button", { className: "primary", textContent: "+ Rutina nueva" });
+        add.onclick = () => editRoutine(null);
+        const list = el("div", { className: "list" }, ...routines.map((r, index) => {
+          const edit = el("button", { textContent: "Editar" });
+          edit.onclick = () => editRoutine(index);
+          const del = el("button", { className: "danger", textContent: "Borrar" });
+          del.onclick = async () => {
+            if (!confirm(`¿Borrar la rutina «${r.phrase}»?`)) return;
+            try { await saveRoutines(routines.filter((_, i) => i !== index)); await showRoutines(); } catch (err) { alert(err.message); }
           };
-          const mode = el("select", {}, el("option", { value: "", textContent: "Ninguno" }),
-            ...modes.map((m) => el("option", { value: m.name, textContent: m.name })));
-          mode.value = r.mode || "";
-          mode.onchange = () => (r.mode = mode.value);
-          // Actions: the same step editor as modes (lights on/off, brightness, color, volume…).
-          r.steps ??= [];
-          const steps = el("div");
-          const drawSteps = () => steps.replaceChildren(...r.steps.map((st) => stepEditor(st, r.steps, drawSteps)));
-          drawSteps();
-          const addStep = el("button", { textContent: "+ Acción", type: "button" });
-          addStep.onclick = () => {
-            const first = devices.find((d) => d.domain === "light") || devices.find((d) => d.domain !== "script");
-            if (!first) return;
-            r.steps.push({ device: first.id, action: "", params: {} });
-            drawSteps();
-          };
-          const remove = el("button", { className: "link", textContent: "Quitar rutina", type: "button" });
-          remove.onclick = () => { routines.splice(routines.indexOf(r), 1); draw(); };
-          return el("div", { className: "card" }, el("div", { className: "fields" },
-            field("phrase", "Cuando diga «Finnip, …»", { placeholder: "despierta, ya llegó papá", maxLength: 80, wide: true }),
-            field("reply", "Finnip responde exactamente", { tag: "textarea", placeholder: "Bienvenido a casa, señor.", maxLength: 300, wide: true }),
-            field("music", "Música en Alexa (opcional)", { placeholder: "la playlist 80s Hard Rock Essentials", maxLength: 120 }),
-            el("label", {}, "Activa el modo (opcional)", mode)),
-            el("p", { className: "tag", style: "margin:16px 0 0", textContent: "Acciones (opcional)" }),
-            steps,
-            el("div", { className: "row", style: "margin-top:12px" }, addStep, el("span", { className: "grow" }), remove));
+          const extras = [r.steps?.length ? `${r.steps.length} acciones` : "", r.mode, r.music ? `música: ${r.music}` : ""].filter(Boolean);
+          return el("div", { className: "card" },
+            el("div", { className: "grow" }, el("h2", { textContent: `«${r.phrase}»` }),
+              el("span", { className: "tag", textContent: [r.reply.length > 60 ? `${r.reply.slice(0, 60)}…` : r.reply, ...extras].filter(Boolean).join(" · ") })),
+            edit, del);
         }));
-        const add = el("button", { textContent: "+ Rutina nueva", type: "button" });
-        add.onclick = () => { routines.push({ phrase: "", reply: "", music: "", mode: "", steps: [] }); draw(); };
-        const save = el("button", { className: "primary", textContent: "Guardar rutinas", type: "button" });
-        save.onclick = async () => {
-          msg.className = "msg";
-          msg.textContent = "Guardando…";
-          try {
-            routines = (await api("PUT", "routines", { routines })).routines;
-            draw();
-            msg.textContent = "Guardado. Finnip ya las usa.";
-          } catch (err) {
-            msg.className = "msg error";
-            msg.textContent = err.message;
-          }
-        };
-        draw();
-        root.replaceChildren(el("p", { className: "empty", textContent: "Al decir la frase, Finnip hace las acciones, activa el modo, pone la música y responde solo el texto que pongas." }),
-          box, el("div", { className: "row" }, add, el("span", { className: "grow" }), save), msg);
+        root.replaceChildren(el("div", { className: "row", style: "margin-bottom:12px" },
+          el("span", { className: "grow empty", textContent: "Al decir la frase, Finnip hace las acciones, activa el modo, pone la música y responde solo el texto que pongas." }), add),
+          routines.length ? list : el("p", { className: "empty", textContent: "Todavía no hay rutinas." }));
       }
-
       showModes().then(showRoutines);
     </script>
   </body>

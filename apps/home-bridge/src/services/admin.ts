@@ -1,5 +1,5 @@
 import { ALLOWED_DOMAINS, DEVICE_LABEL, domainOf } from "../devices.js";
-import { checkStep, MUSIC_OFF, MUSIC_ON, readMode, scriptId, SLUG, toHa, type HaStep, type Mode } from "../modes.js";
+import { checkStep, describeMusic, readMode, scriptId, SLUG, toHa, type HaStep, type Mode, type Music } from "../modes.js";
 import type { DevicesService } from "./devices.js";
 import type { HomeAssistantService } from "./home-assistant.js";
 import { RegistryError, type Registry } from "./registry.js";
@@ -28,7 +28,7 @@ export function createAdminService(
     function exposable(id: string) {
         const domain = domainOf(id);
         if (!domain || !EXPOSABLE_DOMAINS.includes(domain as (typeof EXPOSABLE_DOMAINS)[number])) {
-            throw new Refused(400, "Finnip solo puede tomar en cuenta luces, enchufes, persianas, clima y bocinas");
+            throw new Refused(400, "Finnip solo puede tomar en cuenta luces, enchufes, persianas, clima, bocinas y ajustes de dispositivos");
         }
     }
 
@@ -104,7 +104,7 @@ export function createAdminService(
         mode,
 
         /** Creates or replaces the mode. Every step is checked like a direct order; one bad step refuses it all. */
-        async save(slug: string, body: { name?: string; music: boolean; steps: { device: string; action: string; params: Record<string, unknown> }[] }) {
+        async save(slug: string, body: { name?: string; music: Music; steps: { device: string; action: string; params: Record<string, unknown> }[] }) {
             const id = scriptId(slugOf(slug));
             const existing = await homeAssistant.getScriptConfig(id);
             if (existing && !readMode(slug, existing).editable) {
@@ -121,7 +121,7 @@ export function createAdminService(
             await homeAssistant.saveScriptConfig(id, {
                 ...(existing?.icon ? { icon: existing.icon } : {}),
                 alias: /^modo\b/i.test(name) ? name : `Modo ${name}`, // "Modo X" is what the voice fast path matches
-                description: body.music ? MUSIC_ON : MUSIC_OFF,
+                description: describeMusic(body.music),
                 sequence,
             });
             for (let attempt = 1; ; attempt++) {

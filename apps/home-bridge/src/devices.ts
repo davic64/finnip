@@ -5,7 +5,8 @@ export const DEVICE_LABEL = "finnip";
 
 // Domains Finnip may control. A labeled entity outside this list (lock, alarm…) is ignored.
 // script: the "modos" (Modo estudio, Modo cine…), edited in Home Assistant and only run from here.
-export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate", "media_player", "script"] as const;
+// select/number: a device's settings, e.g. the LED strip's audio effect and microphone sensitivity.
+export const ALLOWED_DOMAINS = ["light", "switch", "cover", "climate", "media_player", "script", "select", "number"] as const;
 export type Domain = (typeof ALLOWED_DOMAINS)[number];
 
 export interface Entity {
@@ -32,6 +33,12 @@ export interface Device {
     min_temp?: number | null;
     max_temp?: number | null;
     hvac_modes?: string[];
+    /** select: its choices. */
+    options?: string[];
+    /** number: its range. */
+    min?: number | null;
+    max?: number | null;
+    step?: number | null;
     volume?: number | null;
     media_title?: string | null;
     media_artist?: string | null;
@@ -40,8 +47,8 @@ export interface Device {
     media_duration?: number | null;
     media_position?: number | null;
     media_position_at?: string | null;
-    /** Modes (scripts): whether Finnip picks music when it runs (from the script's description). */
-    music?: boolean;
+    /** Modes (scripts): Finnip picks music (true), none (false) or this query (from the script's description). */
+    music?: boolean | string;
 }
 
 const ENTITY_ID = /^([a-z_]+)\.[a-z0-9_]+$/;
@@ -72,6 +79,10 @@ function capabilitiesOf(domain: Domain, attributes: Record<string, unknown>): Ac
             return ["on", "off"];
         case "script":
             return ["run"];
+        case "select":
+            return ["option"];
+        case "number":
+            return ["value"];
         case "light": {
             const modes = strings(attributes.supported_color_modes);
             const capabilities: ActionName[] = ["on", "off"];
@@ -124,6 +135,10 @@ export function toDevice(entity: Entity, domain: Domain): Device {
         }
         case "cover":
             return { ...base, current_position: num(attributes.current_position) };
+        case "select":
+            return { ...base, options: strings(attributes.options) };
+        case "number":
+            return { ...base, min: num(attributes.min), max: num(attributes.max), step: num(attributes.step) };
         case "media_player": {
             const level = num(attributes.volume_level);
             return {
